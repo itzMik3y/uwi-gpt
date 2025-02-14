@@ -78,11 +78,13 @@ def send_to_deepseek(query, context):
     **Now, generate a response based on the given CONTEXT and USER QUERY.**
     """
 
+    modelName = "llama3:8b"
+    # modelName = "deepseek-r1:7b"
     
     try:
         # Execute the Ollama command with the query
         process = subprocess.run(
-            ["ollama", "run", "deepseek-r1:7b", prompt],
+            ["ollama", "run", modelName, prompt],
             capture_output=True,
             text=True,
             check=True
@@ -91,7 +93,9 @@ def send_to_deepseek(query, context):
         # Extract model output
         response_text = process.stdout.strip()
 
-        return {"response": response_text}
+        return {"response": response_text,
+                "context1": context[0],
+                "context2": context[1],}
 
     except subprocess.CalledProcessError as e:
         return {"error": "Failed to process request", "details": str(e)}
@@ -103,7 +107,7 @@ def home():
 @app.route('/get-data', methods=['GET'])
 def get_data():
     """API endpoint to return data."""
-    query = "What are the level 1 courses for computer science"
+    query = "which courses would you recommend for a final year computer science student"
     data = get_relevant_chunks(query, model)
     result = send_to_deepseek(query, data)
     return result
