@@ -221,32 +221,53 @@ def load_and_clean_documents(doc_folder: str) -> List[Document]:
     heading_regex = re.compile(r"^(?:[A-Z0-9 .-]+)$")
     documents = []
     cache = load_cache()
-    file_list = [filename for filename in os.listdir(doc_folder) if filename.lower().endswith(('.pdf', '.txt'))]
 
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        futures = {
-            executor.submit(process_file, os.path.join(doc_folder, filename), filename, cache): filename 
-            for filename in file_list
-        }
-        for future in concurrent.futures.as_completed(futures):
-            filename = futures[future]
-            try:
-                docs = future.result()
-            except Exception as exc:
-                logging.error(f"Error processing {filename}: {exc}")
-                continue
-            for doc in docs:
-                cleaned = re.sub(r'[ \t]{2,}', ' ', doc.page_content).strip()
-                if not cleaned:
+    # Collect all .pdf and .txt files.
+    file_list = [
+        filename for filename in os.listdir(doc_folder)
+        if filename.lower().endswith(('.pdf', '.txt'))
+    ]
+
+    # Define a chunk size of 3.
+    chunk_size = 3
+
+    # Process files in batches of three.
+    for i in range(0, len(file_list), chunk_size):
+        batch = file_list[i:i + chunk_size]
+
+        # Use a ProcessPoolExecutor for parallel I/O-heavy tasks.
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            futures = {
+                executor.submit(
+                    process_file, os.path.join(doc_folder, filename), filename, cache
+                ): filename
+                for filename in batch
+            }
+            for future in concurrent.futures.as_completed(futures):
+                filename = futures[future]
+                try:
+                    docs = future.result()
+                except Exception as exc:
+                    logging.error(f"Error processing {filename}: {exc}")
                     continue
-                doc.page_content = cleaned
-                possible_heading = cleaned.split('\n', 1)[0].strip()
-                doc.metadata["heading"] = possible_heading if heading_regex.match(possible_heading) else "N/A"
-                if "source_file" not in doc.metadata:
-                    doc.metadata["source_file"] = filename
-                documents.append(doc)
+
+                for doc in docs:
+                    cleaned = re.sub(r'[ \t]{2,}', ' ', doc.page_content).strip()
+                    if not cleaned:
+                        continue
+                    doc.page_content = cleaned
+                    possible_heading = cleaned.split('\n', 1)[0].strip()
+                    doc.metadata["heading"] = (
+                        possible_heading if heading_regex.match(possible_heading) else "N/A"
+                    )
+                    if "source_file" not in doc.metadata:
+                        doc.metadata["source_file"] = filename
+                    documents.append(doc)
+
+    # Save updated cache after processing all batches.
     save_cache(cache)
     return documents
+
 
 # =============================================================================
 # Enhanced Hierarchical Splitting with Semantic Boundaries
