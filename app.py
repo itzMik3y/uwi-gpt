@@ -1,25 +1,18 @@
-from flask import Flask, jsonify
+from flask import Flask
 import psycopg2
 import subprocess
 
 
 import requests
-from sentence_transformers import SentenceTransformer #pip install sentence-transformers
+from sentence_transformers import SentenceTransformer, CrossEncoder #pip install sentence-transformers
 
 app = Flask(__name__)
 
-DB_CONFIG = {
-    "dbname": "uwi_gpt",
-    "user": "postgres",
-    "password": "Firekid109",
-    "host": "localhost",
-    "port": "5432"
-}
-
-
-
 # Load the embedding model
 model = SentenceTransformer("BAAI/bge-base-en-v1.5")
+
+# Load Reranker Model
+reranker = CrossEncoder("BAAI/bge-reranker-base")
 
 def get_relevant_chunks(query, model):
     """Finds the most relevant chunks based on query similarity."""
@@ -43,6 +36,21 @@ def get_relevant_chunks(query, model):
     conn.close()
     
     return results
+
+def rerankChunks(query,chunks):
+    
+     # Extract only the chunk text for reranking
+    text_chunks = [chunk[0] for chunk in chunks]  # Extract only the actual chunk text
+    
+    # Rerank using CrossEncoder
+    rerank_scores = reranker.predict([(query, chunk) for chunk in text_chunks])
+
+    # Sort by relevance score
+    reranked_results = sorted(zip(rerank_scores, chunks), reverse=True)
+    
+    sorted_chunks = [chunk for score, chunk in reranked_results]
+    
+    return sorted_chunks
 
 def send_to_deepseek(query, context):
     """Sends a chunk of data to DeepSeek AI via terminal ollama."""
@@ -107,8 +115,9 @@ def home():
 @app.route('/get-data', methods=['GET'])
 def get_data():
     """API endpoint to return data."""
-    query = "which courses would you recommend for a final year computer science student"
-    data = get_relevant_chunks(query, model)
+    query = "what first year courses must i do as a computer science student?"
+    chunks = get_relevant_chunks(query, model)
+    data = rerankChunks(query,chunks)
     result = send_to_deepseek(query, data)
     return result
     
