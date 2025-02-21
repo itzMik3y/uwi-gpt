@@ -8,9 +8,9 @@ import logging
 import numpy as np
 import uuid
 import time  # For timing logs
-from typing import Optional, List, Union
+from typing import Optional, List
+from document import Document
 
-# Use joblib for faster serialization instead of pickle.
 import joblib
 
 # Configure logging.
@@ -47,37 +47,19 @@ from sentence_transformers import CrossEncoder
 cross_encoder = CrossEncoder("BAAI/bge-reranker-base")
 
 
-# =============================================================================
-# Function to get modification times for incremental loading
-# =============================================================================
-def get_docs_folder_state(doc_folder: str) -> dict:
-    """
-    Return a dictionary of {filename: modification_time} for each PDF/TXT file in doc_folder.
-    """
-    state = {}
-    for filename in os.listdir(doc_folder):
-        if filename.lower().endswith(('.pdf', '.txt')):
-            full_path = os.path.join(doc_folder, filename)
-            state[filename] = os.path.getmtime(full_path)
-    return state
+# # =============================================================================
+# # Document Class and Helpers
+# # =============================================================================
+# class Document:
+#     def __init__(self, page_content: str, metadata: dict, id: Optional[str] = None):
+#         self.page_content = page_content
+#         self.metadata = metadata
+#         self.id = id or str(uuid.uuid4())
 
+#     def __repr__(self):
+#         return f"Document(source={self.metadata.get('source_file', 'N/A')}, length={len(self.page_content)})"
 
-# =============================================================================
-# Global Document Class (with unique id)
-# =============================================================================
-class Document:
-    def __init__(self, page_content: str, metadata: dict, id: Optional[str] = None):
-        self.page_content = page_content
-        self.metadata = metadata
-        self.id = id or str(uuid.uuid4())
-
-    def __repr__(self):
-        return f"Document(source={self.metadata.get('source_file', 'N/A')}, length={len(self.page_content)})"
-
-
-# =============================================================================
 # Example structured data for degree programs (metadata)
-# =============================================================================
 degree_programs_data = [
     {
         "title": "B.Sc. Computer Science",
@@ -108,9 +90,8 @@ def create_documents_from_data(data_list: List[dict]) -> List[Document]:
         docs.append(doc)
     return docs
 
-
 # =============================================================================
-# Cache configuration for PDF extraction
+# PDF Caching and Extraction Helpers
 # =============================================================================
 CACHE_FILE = "pdf_cache.json"
 
@@ -133,46 +114,11 @@ def load_cache() -> dict:
 
 def save_cache(cache: dict):
     try:
-        with open(CACHE_FILE, 'w') as f:
+        with open(CACHE_FILE, "w") as f:
             json.dump(cache, f)
     except Exception as e:
         logging.error(f"Error saving cache: {e}")
 
-
-# =============================================================================
-# Custom LLM class for Ollama
-# =============================================================================
-class OllamaLLM(LLM):
-    model_name: str = "llama3:8b"  # Updated model name
-    temperature: float = 0.0
-
-    @property
-    def _llm_type(self) -> str:
-        return "ollama"
-
-    def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
-        command = ["ollama", "run", self.model_name, "p"]
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8"
-        )
-        out, err = process.communicate(prompt)
-        if err:
-            logging.error(f"Ollama stderr: {err}")
-        return out
-
-    @property
-    def _identifying_params(self):
-        return {"model_name": self.model_name, "temperature": self.temperature}
-
-
-# =============================================================================
-# Custom PDF Loader with Table Extraction and Fallback
-# =============================================================================
 def load_pdf_with_tables(filepath: str) -> str:
     texts = []
     table_settings = {
@@ -213,11 +159,7 @@ def load_pdf_with_tables(filepath: str) -> str:
         logging.error(f"Error reading PDF {filepath}: {e}")
         return ""
 
-
-# =============================================================================
-# Helper function to process individual files (PDF or TXT) with caching
-# =============================================================================
-def process_file(file_path: str, filename: str, cache: dict):
+def process_file(file_path: str, filename: str, cache: dict) -> List[Document]:
     docs = []
     if filename.lower().endswith('.pdf'):
         checksum = compute_checksum(file_path)
@@ -238,10 +180,17 @@ def process_file(file_path: str, filename: str, cache: dict):
         docs = loader.load()
     return docs
 
+def get_docs_folder_state(doc_folder: str) -> dict:
+    """
+    Return a dictionary of {filename: modification_time} for each PDF/TXT file in doc_folder.
+    """
+    state = {}
+    for filename in os.listdir(doc_folder):
+        if filename.lower().endswith(('.pdf', '.txt')):
+            full_path = os.path.join(doc_folder, filename)
+            state[filename] = os.path.getmtime(full_path)
+    return state
 
-# =============================================================================
-# Document Loading and Cleaning (Parallelized)
-# =============================================================================
 def load_and_clean_documents(doc_folder: str) -> List[Document]:
     start_time = time.perf_counter()
     heading_regex = re.compile(r"^(?:[A-Z0-9 .-]+)$")
@@ -287,10 +236,6 @@ def load_and_clean_documents(doc_folder: str) -> List[Document]:
     logging.info(f"Document loading and cleaning took {end_time - start_time:.2f} seconds")
     return documents
 
-
-# =============================================================================
-# Enhanced Hierarchical Splitting with Semantic Boundaries
-# =============================================================================
 def simple_split(documents: List[Document], target_chunk_size: int = 512) -> List[Document]:
     start_time = time.perf_counter()
     try:
@@ -325,7 +270,6 @@ def simple_split(documents: List[Document], target_chunk_size: int = 512) -> Lis
     end_time = time.perf_counter()
     logging.info(f"Simple splitting took {end_time - start_time:.2f} seconds")
     return new_docs
-
 
 # =============================================================================
 # Prompt Templates
@@ -370,9 +314,8 @@ credit_prompt = PromptTemplate(
     template=credit_template
 )
 
-
 # =============================================================================
-# Query Expansion/Reformulation
+# Query Expansion and Metadata Filtering
 # =============================================================================
 def expand_query(query: str, llm: LLM) -> List[str]:
     expand_start = time.perf_counter()
@@ -386,10 +329,6 @@ def expand_query(query: str, llm: LLM) -> List[str]:
     logging.info(f"Query expansion took {expand_end - expand_start:.2f} seconds")
     return result
 
-
-# =============================================================================
-# Metadata Filtering
-# =============================================================================
 def filter_documents_by_metadata(docs: List[Document], query: str) -> List[Document]:
     filter_start = time.perf_counter()
     if "uwi" in query.lower():
@@ -400,9 +339,38 @@ def filter_documents_by_metadata(docs: List[Document], query: str) -> List[Docum
     logging.info(f"Metadata filtering took {filter_end - filter_start:.2f} seconds")
     return docs
 
+# =============================================================================
+# Custom LLM Class for Ollama
+# =============================================================================
+class OllamaLLM(LLM):
+    model_name: str = "llama3:8b"  # Updated model name
+    temperature: float = 0.0
+
+    @property
+    def _llm_type(self) -> str:
+        return "ollama"
+
+    def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
+        command = ["ollama", "run", self.model_name, "p"]
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8"
+        )
+        out, err = process.communicate(prompt)
+        if err:
+            logging.error(f"Ollama stderr: {err}")
+        return out
+
+    @property
+    def _identifying_params(self):
+        return {"model_name": self.model_name, "temperature": self.temperature}
 
 # =============================================================================
-# BM25 Retriever (subclassing BaseRetriever)
+# BM25 Retriever
 # =============================================================================
 class BM25Retriever(BaseRetriever):
     _documents: List[Document] = PrivateAttr()
@@ -425,7 +393,9 @@ class BM25Retriever(BaseRetriever):
 
     get_relevant_documents = _get_relevant_documents
 
-
+# =============================================================================
+# Cosine Similarity Retriever
+# =============================================================================
 class CosineSimilarityRetriever(BaseRetriever):
     _documents: List[Document] = PrivateAttr()
     _embedding_model = PrivateAttr()
@@ -443,7 +413,6 @@ class CosineSimilarityRetriever(BaseRetriever):
         ]
     
     def _get_relevant_documents(self, query: str, **kwargs) -> List[Document]:
-        tokens = query.lower().split()
         retrieval_start = time.perf_counter()
         query_embedding = np.array(self._embedding_model.embed_query(query))
         query_norm = query_embedding / np.linalg.norm(query_embedding)
@@ -460,7 +429,9 @@ class CosineSimilarityRetriever(BaseRetriever):
 
     get_relevant_documents = _get_relevant_documents
 
-
+# =============================================================================
+# Keyword Retriever
+# =============================================================================
 class KeywordRetriever(BaseRetriever):
     _documents: List[Document] = PrivateAttr()
     _k: int = PrivateAttr()
@@ -481,9 +452,8 @@ class KeywordRetriever(BaseRetriever):
 
     get_relevant_documents = _get_relevant_documents
 
-
 # =============================================================================
-# Weighted Ensemble Retriever with Reciprocal Rank Fusion
+# Ensemble Retriever
 # =============================================================================
 class EnsembleRetriever(BaseRetriever):
     _retrievers: List[BaseRetriever] = PrivateAttr()
@@ -499,7 +469,6 @@ class EnsembleRetriever(BaseRetriever):
         self._threshold = threshold
 
     def _get_relevant_documents(self, query: str, **kwargs) -> List[Document]:
-        # *** We are NOT touching this code, as requested. ***
         doc_scores = {}
         for retriever, weight in zip(self._retrievers, self._weights):
             docs = retriever.get_relevant_documents(query, **kwargs)
@@ -522,7 +491,6 @@ class EnsembleRetriever(BaseRetriever):
 
     get_relevant_documents = _get_relevant_documents
 
-
 # =============================================================================
 # Diversity Re-ranking using Cross-Encoder
 # =============================================================================
@@ -536,7 +504,6 @@ def rerank_with_crossencoder(query: str, docs: List[Document]) -> List[Document]
     re_rank_end = time.perf_counter()
     logging.info(f"Cross-encoder re-ranking took {re_rank_end - re_rank_start:.2f} seconds")
     return [doc for doc, score in ranked]
-
 
 # =============================================================================
 # Initialization Helper: Documents, Vector Store & Embedding Model
@@ -604,100 +571,96 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
     logging.info(f"Initialization took {init_end - init_start:.2f} seconds")
     return docs, vector_store, embedding_model
 
+# =============================================================================
+# FastAPI Integration
+# =============================================================================
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
-# =============================================================================
-# Main Execution
-# =============================================================================
-def main():
-    overall_start = time.perf_counter()
-    # 1. Initialization
-    docs, vector_store, embedding_model = initialize_documents_and_vector_store()
-    
-    # 2. Build Retrievers concurrently
-    build_retrievers_start = time.perf_counter()
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_sem = executor.submit(lambda: vector_store.as_retriever(search_kwargs={"k": 25}))
-        future_bm25 = executor.submit(lambda: BM25Retriever(docs, k=25))
-        future_chroma_mmr = executor.submit(lambda: vector_store.as_retriever(
-            search_type="mmr",
-            search_kwargs={"k": 25, "fetch_k": 30, "lambda_mult": 0.5}
-        ))
-    
-        # future_cosine = executor.submit(lambda: CosineSimilarityRetriever(docs, embedding_model, k=10))
-        semantic_retriever = future_sem.result()
-        bm25_retriever = future_bm25.result()
-        chroma_mmr_retriever = future_chroma_mmr.result()
-        # cosine_retriever = future_cosine.result()
+app = FastAPI(title="Document QA API")
+
+# Global variables for pipeline resources.
+docs = None
+vector_store = None
+embedding_model = None
+ensemble_ret = None
+llm = None
+
+@app.on_event("startup")
+async def startup_event():
+    global docs, vector_store, embedding_model, ensemble_ret, llm
+    # Initialize documents, vector store, and embedding model.
+    docs, vector_store, embedding_model = initialize_documents_and_vector_store(doc_folder="./docs",
+                                                                                  persist_directory="./chroma_db_bilingual")
+    # Build retrievers concurrently (using simplified logic here).
+    semantic_retriever = vector_store.as_retriever(search_kwargs={"k": 25})
+    bm25_retriever = BM25Retriever(docs, k=25)
+    chroma_mmr_retriever = vector_store.as_retriever(
+        search_type="mmr", search_kwargs={"k": 25, "fetch_k": 30, "lambda_mult": 0.5}
+    )
     ensemble_ret = EnsembleRetriever(
-        retrievers=[semantic_retriever,bm25_retriever,chroma_mmr_retriever], #cosine was 0.9 bm25 was 0.5
-        weights=[1.0,0.9,0.9],
+        retrievers=[semantic_retriever, bm25_retriever, chroma_mmr_retriever],
+        weights=[1.0, 0.9, 0.9],
         threshold=1.0
     )
-
-    build_retrievers_end = time.perf_counter()
-    logging.info(f"Building retrievers took {build_retrievers_end - build_retrievers_start:.2f} seconds")
-
-    # 3. LLM Setup
-    llm_setup_start = time.perf_counter()
     llm = OllamaLLM(model_name="llama3:8b", temperature=0.0)
-    user_query = "What are the prerequisites for analysis of algorithms?"
-    logging.info(f"User Query: {user_query}")
-    llm_setup_end = time.perf_counter()
-    logging.info(f"LLM setup took {llm_setup_end - llm_setup_start:.2f} seconds")
+    logging.info("API Startup: Resources initialized.")
 
-    # 4. Query Expansion
-    expanded_queries = expand_query(user_query, llm)
+# Request and response models.
+class QueryRequest(BaseModel):
+    query: str
 
-    # 5. Parallel Retrieval for Expanded Queries
-    retrieval_start = time.perf_counter()
-    all_initial_docs = []
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        futures = {executor.submit(ensemble_ret.invoke, eq): eq for eq in expanded_queries}
-        for future in concurrent.futures.as_completed(futures):
-            eq = futures[future]
-            try:
-                docs_for_eq = future.result()
-                all_initial_docs.extend(docs_for_eq)
-            except Exception as exc:
-                logging.error(f"Error retrieving docs for query '{eq}': {exc}")
-    retrieval_end = time.perf_counter()
-    logging.info(f"Parallel retrieval for expanded queries took {retrieval_end - retrieval_start:.2f} seconds")
+class QueryResponse(BaseModel):
+    answer: str
+    processing_time: float
 
-    # 6. Uniquify & Filter
-    filter_start = time.perf_counter()
-    unique_docs = {doc.metadata.get("source_file", doc.id): doc for doc in all_initial_docs}.values()
-    initial_docs = list(unique_docs)
-    logging.info(f"Initial retrieval returned {len(initial_docs)} unique docs.")
-    initial_docs = filter_documents_by_metadata(initial_docs, user_query)
-    logging.info(f"After metadata filtering, {len(initial_docs)} docs remain.")
-    filter_end = time.perf_counter()
-    logging.info(f"Deduplication & filtering took {filter_end - filter_start:.2f} seconds")
+@app.post("/query", response_model=QueryResponse)
+async def query_endpoint(request: QueryRequest):
+    start_time = time.perf_counter()
+    user_query = request.query
+    logging.info(f"Received query: {user_query}")
 
-    # 7. Rerank using Cross-Encoder
-    reranked_docs = rerank_with_crossencoder(user_query, initial_docs)
+    try:
+        # 1. Expand Query
+        expanded_queries = expand_query(user_query, llm)
 
-    # 8. Combine Context & Choose Prompt
-    context_start = time.perf_counter()
-    combined_context = "\n".join([doc.page_content for doc in reranked_docs[:10]])
-    if any(keyword in user_query.lower() for keyword in ["credit", "graduate", "bsc", "degree", "study"]):
-        chosen_prompt = credit_prompt
-        logging.info("Using custom credit prompt.")
-    else:
-        chosen_prompt = default_prompt
-        logging.info("Using default prompt.")
-    context_end = time.perf_counter()
-    logging.info(f"Context combination & prompt selection took {context_end - context_start:.2f} seconds")
+        # 2. Retrieve documents for each expanded query.
+        all_initial_docs = []
+        for eq in expanded_queries:
+            docs_for_eq = ensemble_ret.get_relevant_documents(eq)
+            all_initial_docs.extend(docs_for_eq)
 
-    # 9. LLM Call
-    llm_call_start = time.perf_counter()
-    prompt_str = chosen_prompt.format(context=combined_context, question=user_query)
-    answer = llm._call(prompt_str)
-    llm_call_end = time.perf_counter()
-    logging.info(f"LLM call took {llm_call_end - llm_call_start:.2f} seconds")
+        # 3. Deduplicate and filter documents.
+        unique_docs = {doc.metadata.get("source_file", doc.id): doc for doc in all_initial_docs}.values()
+        initial_docs = list(unique_docs)
+        initial_docs = filter_documents_by_metadata(initial_docs, user_query)
 
-    logging.info("=== Final Answer ===")
-    logging.info(answer)
+        # 4. Rerank using Cross-Encoder.
+        reranked_docs = rerank_with_crossencoder(user_query, initial_docs)
 
-    # 10. Total Execution Time
-    overall_end = time.perf_counter()
-    logging.info(f"Total script execution took {overall_end - overall_start:.2f} seconds")
+        # 5. Combine context and choose prompt.
+        combined_context = "\n".join([doc.page_content for doc in reranked_docs[:10]])
+        if any(keyword in user_query.lower() for keyword in ["credit", "graduate", "bsc", "degree", "study"]):
+            chosen_prompt = credit_prompt
+            logging.info("Using custom credit prompt.")
+        else:
+            chosen_prompt = default_prompt
+            logging.info("Using default prompt.")
+            
+        prompt_str = chosen_prompt.format(context=combined_context, question=user_query)
+        
+        # 6. Call the LLM to get the answer.
+        answer = llm._call(prompt_str)
+        
+        processing_time = time.perf_counter() - start_time
+        return QueryResponse(answer=answer, processing_time=processing_time)
+    except Exception as e:
+        logging.error(f"Error processing query: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# =============================================================================
+# Main Entry Point
+# =============================================================================
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
