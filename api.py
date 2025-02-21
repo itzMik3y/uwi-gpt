@@ -11,7 +11,7 @@ import time  # For timing logs
 from typing import Optional, List
 from document import Document
 
-import joblib
+import pickle  # <-- Using pickle instead of joblib
 
 # Configure logging.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -46,20 +46,9 @@ from transformers import pipeline
 from sentence_transformers import CrossEncoder
 cross_encoder = CrossEncoder("BAAI/bge-large-en-v1.5")
 
-
-# # =============================================================================
-# # Document Class and Helpers
-# # =============================================================================
-# class Document:
-#     def __init__(self, page_content: str, metadata: dict, id: Optional[str] = None):
-#         self.page_content = page_content
-#         self.metadata = metadata
-#         self.id = id or str(uuid.uuid4())
-
-#     def __repr__(self):
-#         return f"Document(source={self.metadata.get('source_file', 'N/A')}, length={len(self.page_content)})"
-
+# =============================================================================
 # Example structured data for degree programs (metadata)
+# =============================================================================
 degree_programs_data = [
     {
         "title": "B.Sc. Computer Science",
@@ -510,8 +499,10 @@ def rerank_with_crossencoder(query: str, docs: List[Document]) -> List[Document]
 # =============================================================================
 def initialize_documents_and_vector_store(doc_folder: str = "./docs",
                                           persist_directory: str = "./chroma_db_bilingual",
-                                          docs_cache_path: str = "docs_cache.joblib",
+                                          docs_cache_path: str = "docs_cache.pkl",  # Using .pkl now
                                           state_cache_path: str = "docs_state.json"):
+    import pickle  # for loading/saving .pkl files
+
     init_start = time.perf_counter()
     # 1. Initialize the embedding model (using GPU if available)
     embedding_model = SentenceTransformerEmbeddings(
@@ -537,8 +528,9 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
         logging.info("Persistent vector store found. Loading from disk...")
         vector_store = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
         if os.path.exists(docs_cache_path):
-            docs = joblib.load(docs_cache_path)
-            logging.info(f"Loaded {len(docs)} cached document chunks.")
+            with open(docs_cache_path, "rb") as f:
+                docs = pickle.load(f)
+            logging.info(f"Loaded {len(docs)} cached document chunks from .pkl.")
         else:
             logging.warning("No document cache found. Rebuilding documents from source...")
             documents = load_and_clean_documents(doc_folder)
@@ -547,7 +539,8 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
             documents.extend(metadata_docs)
             docs = simple_split(documents, target_chunk_size=512)
             logging.info(f"Created {len(docs)} document chunks after splitting.")
-            joblib.dump(docs, docs_cache_path)
+            with open(docs_cache_path, "wb") as f:
+                pickle.dump(docs, f)
     else:
         logging.info("No persistent vector store found or documents have changed. Loading and cleaning documents...")
         documents = load_and_clean_documents(doc_folder)
@@ -558,7 +551,8 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
         logging.info(f"Created {len(docs)} document chunks after splitting.")
         logging.info("Building new vector store...")
         vector_store = Chroma.from_documents(docs, embedding_model, persist_directory=persist_directory)
-        joblib.dump(docs, docs_cache_path)
+        with open(docs_cache_path, "wb") as f:
+            pickle.dump(docs, f)
     
     # 5. Save the current folder state for future incremental updates.
     try:
@@ -590,8 +584,12 @@ llm = None
 async def startup_event():
     global docs, vector_store, embedding_model, ensemble_ret, llm
     # Initialize documents, vector store, and embedding model.
-    docs, vector_store, embedding_model = initialize_documents_and_vector_store(doc_folder="./docs",
-                                                                                  persist_directory="./chroma_db_bilingual")
+    docs, vector_store, embedding_model = initialize_documents_and_vector_store(
+        doc_folder="./docs",
+        persist_directory="./chroma_db_bilingual",
+        docs_cache_path="docs_cache.pkl",  # Notice the .pkl extension
+        state_cache_path="docs_state.json"
+    )
     # Build retrievers concurrently (using simplified logic here).
     semantic_retriever = vector_store.as_retriever(search_kwargs={"k": 25})
     bm25_retriever = BM25Retriever(docs, k=25)
