@@ -41,10 +41,10 @@ except ModuleNotFoundError:
     logging.warning("PyMuPDF (fitz) not found. Install it with 'pip install PyMuPDF' for fallback extraction.")
 
 from transformers import pipeline
-domain_classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+# domain_classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
 from sentence_transformers import CrossEncoder
-cross_encoder = CrossEncoder("BAAI/bge-reranker-base")
+cross_encoder = CrossEncoder("BAAI/bge-large-en-v1.5")
 
 
 # # =============================================================================
