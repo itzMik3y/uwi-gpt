@@ -1,4 +1,16 @@
-# ingestion.py
+#!/usr/bin/env python
+"""
+ingestion.py
+
+This script:
+- Loads and cleans documents from a folder.
+- Splits documents into chunks.
+- Uses a JSON file for caching extracted PDF text.
+- Uses joblib for caching processed document chunks.
+- Builds or incrementally updates a persistent Qdrant vector store.
+- Uses an incremental update strategy to add only new/changed documents.
+"""
+
 import os
 import re
 import concurrent.futures
@@ -6,7 +18,7 @@ import hashlib
 import json
 import logging
 import time
-from typing import List
+from typing import List, Dict, Any
 
 import joblib
 import nltk
@@ -14,12 +26,21 @@ import pdfplumber
 from transformers import AutoTokenizer
 from langchain_community.document_loaders import TextLoader
 from langchain_community.embeddings import SentenceTransformerEmbeddings
-from langchain_chroma import Chroma
+# Use the new import per deprecation warning:
+from langchain_community.vectorstores import Qdrant
 
-# Import your custom Document class
 from document import Document
 
-# Initialize tokenizer
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+# Paths and configuration.
+DOC_FOLDER = "./docs"
+PERSIST_COLLECTION = "my_collection"  # Qdrant collection name
+# When using URL only, we do not supply a local "path".
+STATE_CACHE_PATH = "docs_state.json"
+PDF_CACHE_PATH = "pdf_cache.json"      # JSON file for caching PDF extraction results
+DOCS_CACHE_PATH = "docs_cache.joblib"    # Joblib cache for processed document chunks
+
 tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-large-en-v1.5")
 
 try:
@@ -28,10 +49,7 @@ except ModuleNotFoundError:
     fitz = None
     logging.warning("PyMuPDF (fitz) not found. Install it with 'pip install PyMuPDF' for fallback extraction.")
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-# Example structured data for degree programs (metadata)
+# Example structured data for degree programs.
 degree_programs_data = [
     {
         "title": "B.Sc. Computer Science",
@@ -45,26 +63,22 @@ degree_programs_data = [
         "faculty": "Faculty of Science and Technology",
         "description": "Four-year program focusing on hardware, software, and system design..."
     },
-    # ... add more as needed
 ]
 
-def create_documents_from_data(data_list: List[dict]) -> List[Document]:
+def create_documents_from_data(data_list: List[Dict[str, Any]]) -> List[Document]:
     docs = []
     for item in data_list:
-        doc = Document(
+        docs.append(Document(
             page_content=item["description"],
             metadata={
                 "title": item["title"],
                 "department": item["department"],
                 "faculty": item["faculty"]
             }
-        )
-        docs.append(doc)
+        ))
     return docs
 
-# PDF Caching and Extraction Helpers
-CACHE_FILE = "pdf_cache.json"
-
+# ----- PDF Caching and Extraction Helpers -----
 def compute_checksum(filepath: str) -> str:
     hasher = hashlib.md5()
     with open(filepath, 'rb') as f:
@@ -72,22 +86,22 @@ def compute_checksum(filepath: str) -> str:
         hasher.update(buf)
     return hasher.hexdigest()
 
-def load_cache() -> dict:
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, 'r') as f:
-            try:
+def load_pdf_cache() -> Dict[str, str]:
+    if os.path.exists(PDF_CACHE_PATH):
+        try:
+            with open(PDF_CACHE_PATH, "r") as f:
                 return json.load(f)
-            except Exception as e:
-                logging.error(f"Error loading cache: {e}")
-                return {}
+        except Exception as e:
+            logging.error(f"Error loading PDF cache: {e}")
+            return {}
     return {}
 
-def save_cache(cache: dict):
+def save_pdf_cache(cache: Dict[str, str]):
     try:
-        with open(CACHE_FILE, "w") as f:
+        with open(PDF_CACHE_PATH, "w") as f:
             json.dump(cache, f)
     except Exception as e:
-        logging.error(f"Error saving cache: {e}")
+        logging.error(f"Error saving PDF cache: {e}")
 
 def load_pdf_with_tables(filepath: str) -> str:
     texts = []
@@ -129,7 +143,7 @@ def load_pdf_with_tables(filepath: str) -> str:
         logging.error(f"Error reading PDF {filepath}: {e}")
         return ""
 
-def process_file(file_path: str, filename: str, cache: dict) -> List[Document]:
+def process_file(file_path: str, filename: str, cache: Dict[str, str]) -> List[Document]:
     docs = []
     if filename.lower().endswith('.pdf'):
         checksum = compute_checksum(file_path)
@@ -143,17 +157,13 @@ def process_file(file_path: str, filename: str, cache: dict) -> List[Document]:
         if not text.strip():
             logging.warning(f"Skipping {filename} as no text was extracted.")
             return []
-        doc = Document(page_content=text, metadata={"source_file": filename})
-        docs.append(doc)
+        docs.append(Document(page_content=text, metadata={"source_file": filename}))
     elif filename.lower().endswith('.txt'):
         loader = TextLoader(file_path)
         docs = loader.load()
     return docs
 
-def get_docs_folder_state(doc_folder: str) -> dict:
-    """
-    Return a dictionary of {filename: modification_time} for each PDF/TXT file in doc_folder.
-    """
+def get_docs_folder_state(doc_folder: str) -> Dict[str, float]:
     state = {}
     for filename in os.listdir(doc_folder):
         if filename.lower().endswith(('.pdf', '.txt')):
@@ -165,19 +175,14 @@ def load_and_clean_documents(doc_folder: str) -> List[Document]:
     start_time = time.perf_counter()
     heading_regex = re.compile(r"^(?:[A-Z0-9 .-]+)$")
     documents = []
-    cache = load_cache()
-
-    file_list = [
-        filename for filename in os.listdir(doc_folder)
-        if filename.lower().endswith(('.pdf', '.txt'))
-    ]
-
+    pdf_cache = load_pdf_cache()
+    file_list = [fn for fn in os.listdir(doc_folder) if fn.lower().endswith(('.pdf', '.txt'))]
     chunk_size = 3
     for i in range(0, len(file_list), chunk_size):
         batch = file_list[i:i + chunk_size]
         with concurrent.futures.ProcessPoolExecutor() as executor:
             futures = {
-                executor.submit(process_file, os.path.join(doc_folder, filename), filename, cache): filename
+                executor.submit(process_file, os.path.join(doc_folder, filename), filename, pdf_cache): filename
                 for filename in batch
             }
             for future in concurrent.futures.as_completed(futures):
@@ -187,21 +192,17 @@ def load_and_clean_documents(doc_folder: str) -> List[Document]:
                 except Exception as exc:
                     logging.error(f"Error processing {filename}: {exc}")
                     continue
-
                 for doc in docs:
                     cleaned = re.sub(r'[ \t]{2,}', ' ', doc.page_content).strip()
                     if not cleaned:
                         continue
                     doc.page_content = cleaned
                     possible_heading = cleaned.split('\n', 1)[0].strip()
-                    doc.metadata["heading"] = (
-                        possible_heading if heading_regex.match(possible_heading) else "N/A"
-                    )
+                    doc.metadata["heading"] = possible_heading if heading_regex.match(possible_heading) else "N/A"
                     if "source_file" not in doc.metadata:
                         doc.metadata["source_file"] = filename
                     documents.append(doc)
-
-    save_cache(cache)
+    save_pdf_cache(pdf_cache)
     end_time = time.perf_counter()
     logging.info(f"Document loading and cleaning took {end_time - start_time:.2f} seconds")
     return documents
@@ -212,10 +213,8 @@ def simple_split(documents: List[Document], target_chunk_size: int = 512) -> Lis
         nltk.data.find('tokenizers/punkt')
     except LookupError:
         nltk.download('punkt')
-        
     new_docs = []
     header_regex = re.compile(r'^(?:[A-Z\s]{3,}|[A-Z][a-z]+(?:\s[A-Z][a-z]+)*)$')
-    
     for doc in documents:
         sentences = nltk.sent_tokenize(doc.page_content)
         current_chunk = []
@@ -241,20 +240,42 @@ def simple_split(documents: List[Document], target_chunk_size: int = 512) -> Lis
     logging.info(f"Simple splitting took {end_time - start_time:.2f} seconds")
     return new_docs
 
+def incremental_update(doc_folder: str, state_cache_path: str) -> List[Document]:
+    current_state = get_docs_folder_state(doc_folder)
+    if os.path.exists(state_cache_path):
+        with open(state_cache_path, "r") as f:
+            previous_state = json.load(f)
+    else:
+        previous_state = {}
+    new_files = [fname for fname, mtime in current_state.items()
+                 if fname not in previous_state or mtime > previous_state.get(fname, 0)]
+    logging.info(f"Found {len(new_files)} new/modified files.")
+    new_docs = []
+    pdf_cache = load_pdf_cache()
+    for filename in new_files:
+        full_path = os.path.join(doc_folder, filename)
+        docs_from_file = process_file(full_path, filename, pdf_cache)
+        new_docs.extend(docs_from_file)
+    if new_docs:
+        new_docs = simple_split(new_docs, target_chunk_size=512)
+    with open(state_cache_path, "w") as f:
+        json.dump(current_state, f)
+    save_pdf_cache(pdf_cache)
+    return new_docs
+
 def initialize_documents_and_vector_store(doc_folder: str = "./docs",
-                                          persist_directory: str = "./chroma_db_bilingual",
+                                          collection_name: str = "my_collection",
                                           docs_cache_path: str = "docs_cache.joblib",
                                           state_cache_path: str = "docs_state.json"):
     init_start = time.perf_counter()
-    # Initialize the embedding model (using GPU if available)
+    # 1. Initialize the embedding model.
     embedding_model = SentenceTransformerEmbeddings(
         model_name="BAAI/bge-large-en-v1.5",
         model_kwargs={"trust_remote_code": True, "device": "cuda"}
     )
-    # Compute current state of docs folder
+    # 2. Compute current state of docs folder.
     current_state = get_docs_folder_state(doc_folder)
-    
-    # Load previous state if available
+    # 3. Load previous state if available.
     previous_state = {}
     if os.path.exists(state_cache_path):
         try:
@@ -262,13 +283,16 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
                 previous_state = json.load(f)
         except Exception as e:
             logging.error(f"Error loading state cache: {e}")
-    
-    # Determine if reprocessing is needed
+    # 4. Determine if reprocessing is needed.
     reprocess = (current_state != previous_state)
     
-    if os.path.exists(persist_directory) and os.listdir(persist_directory) and not reprocess:
-        logging.info("Persistent vector store found. Loading from disk...")
-        vector_store = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
+    if os.path.exists(collection_name) and not reprocess:
+        logging.info("Persistent vector store found. Loading from Qdrant...")
+        vector_store = Qdrant.from_existing_collection(
+            embedding_model, 
+            collection_name=collection_name, 
+            url="http://localhost:6333"
+        )
         if os.path.exists(docs_cache_path):
             docs = joblib.load(docs_cache_path)
             logging.info(f"Loaded {len(docs)} cached document chunks.")
@@ -289,11 +313,16 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
         documents.extend(metadata_docs)
         docs = simple_split(documents, target_chunk_size=512)
         logging.info(f"Created {len(docs)} document chunks after splitting.")
-        logging.info("Building new vector store...")
-        vector_store = Chroma.from_documents(docs, embedding_model, persist_directory=persist_directory)
+        logging.info("Building new vector store using Qdrant...")
+        vector_store = Qdrant.from_documents(
+            docs, 
+            embedding_model, 
+            collection_name=collection_name, 
+            url="http://localhost:6333",
+            force_recreate=True      # <-- This parameter forces the recreation of the collection.
+        )
         joblib.dump(docs, docs_cache_path)
     
-    # Save current folder state for future incremental updates.
     try:
         with open(state_cache_path, "w") as f:
             json.dump(current_state, f)
@@ -304,15 +333,62 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
     logging.info(f"Initialization took {init_end - init_start:.2f} seconds")
     return docs, vector_store, embedding_model
 
-def load_vector_store(persist_directory: str, embedding_model=None):
+def load_existing_qdrant_store(
+    collection_name: str = "my_collection",
+    docs_cache_path: str = "docs_cache.joblib",
+    qdrant_url: str = "http://localhost:6333"
+):
     """
-    Helper to load the vector store without rebuilding it.
+    Loads the existing Qdrant vector store and cached documents.
     """
-    from langchain_chroma import Chroma
+    from langchain_community.embeddings import SentenceTransformerEmbeddings
+    from langchain_community.vectorstores import Qdrant
+    from qdrant_client import QdrantClient
+    import joblib
+
+    embedding_model = SentenceTransformerEmbeddings(
+        model_name="BAAI/bge-large-en-v1.5",
+        model_kwargs={"trust_remote_code": True, "device": "cuda"}
+    )
+
+    # Create Qdrant client
+    client = QdrantClient(url=qdrant_url)
+
+    # Initialize vector store with client
+    vector_store = Qdrant(
+        client=client,
+        collection_name=collection_name,
+        embeddings=embedding_model
+    )
+
+    if not os.path.exists(docs_cache_path):
+        raise FileNotFoundError(f"Document cache not found: {docs_cache_path}. Please run ingestion first.")
+    docs = joblib.load(docs_cache_path)
+    return docs, vector_store, embedding_model
+
+def load_vector_store(persist_url: str = "http://localhost:6333", 
+                      collection_name: str = "my_collection", 
+                      embedding_model=None,
+                      path: str = "./qdrant_db"):
+    """
+    Helper to load the Qdrant vector store without rebuilding it.
+    """
+    from langchain_community.vectorstores import Qdrant
     from langchain_community.embeddings import SentenceTransformerEmbeddings
     if embedding_model is None:
         embedding_model = SentenceTransformerEmbeddings(
             model_name="BAAI/bge-large-en-v1.5",
             model_kwargs={"trust_remote_code": True, "device": "cuda"}
         )
-    return Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
+    return Qdrant.from_existing_collection(
+        embedding_model,
+        collection_name=collection_name,
+        path=path,
+        url=persist_url
+    )
+
+if __name__ == "__main__":
+    docs, vector_store, embedding_model = initialize_documents_and_vector_store(
+        doc_folder=DOC_FOLDER,
+        collection_name="my_collection"
+    )
