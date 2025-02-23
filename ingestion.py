@@ -271,7 +271,7 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
     # 1. Initialize the embedding model.
     embedding_model = SentenceTransformerEmbeddings(
         model_name="BAAI/bge-large-en-v1.5",
-        model_kwargs={"trust_remote_code": True, "device": "cuda"}
+        model_kwargs={"trust_remote_code": True}
     )
     # 2. Compute current state of docs folder.
     current_state = get_docs_folder_state(doc_folder)
