@@ -83,8 +83,7 @@ credit_prompt = PromptTemplate(
 class OllamaLLM(LLM):
     model_name: str = "llama3:8b"
     temperature: float = 0.0
-    # Annotate as a ClassVar so that Pydantic ignores it as a model field.
-    persistent_process: ClassVar[Optional[subprocess.Popen]] = None  
+    persistent_process: ClassVar[Optional[subprocess.Popen]] = None
 
     @property
     def _llm_type(self) -> str:
@@ -93,7 +92,7 @@ class OllamaLLM(LLM):
     def _init_persistent(self):
         # Initialize a persistent process only on macOS.
         if platform.system() == "Darwin":
-            self.persistent_process = subprocess.Popen(
+            OllamaLLM.persistent_process = subprocess.Popen(
                 ["ollama", "run", self.model_name, "p"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -106,11 +105,13 @@ class OllamaLLM(LLM):
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
         if platform.system() == "Darwin":
             # Use persistent process on macOS.
-            if self.persistent_process is None:
+            if OllamaLLM.persistent_process is None:
                 self._init_persistent()
-            self.persistent_process.stdin.write(prompt + "\n")
-            self.persistent_process.stdin.flush()
-            output = self.persistent_process.stdout.readline()
+            # Write prompt to the persistent process and flush.
+            OllamaLLM.persistent_process.stdin.write(prompt + "\n")
+            OllamaLLM.persistent_process.stdin.flush()
+            # Read one line from stdout (adjust as needed)
+            output = OllamaLLM.persistent_process.stdout.readline()
             return output
         else:
             # For non-macOS systems, use a new subprocess call.
