@@ -19,10 +19,11 @@ import json
 import logging
 import time
 from typing import List, Dict, Any
-
+import platform
 import joblib
 import nltk
 import pdfplumber
+
 from transformers import AutoTokenizer
 from langchain_community.document_loaders import TextLoader
 from langchain_community.embeddings import SentenceTransformerEmbeddings
@@ -33,10 +34,38 @@ from document import Document
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+# --- OS-specific Device Setup ---
+try:
+    import torch
+except ImportError:
+    torch = None
+    logging.warning("PyTorch is not installed. Falling back to CPU.")
+    
+if platform.system() == "Darwin":
+    if torch and torch.backends.mps.is_available():
+        device = "mps"
+        logging.info("Using MPS on macOS")
+    else:
+        device = "cpu"
+        logging.info("MPS not available on macOS; using CPU")
+elif platform.system() == "Windows":
+    if torch and torch.cuda.is_available():
+        device = "cuda"
+        logging.info("Using CUDA on Windows")
+    else:
+        device = "cpu"
+        logging.info("CUDA not available on Windows; using CPU")
+else:
+    if torch and torch.cuda.is_available():
+        device = "cuda"
+        logging.info("Using CUDA on Linux")
+    else:
+        device = "cpu"
+        logging.info("Using CPU on Linux")
+
 # Paths and configuration.
 DOC_FOLDER = "./docs"
 PERSIST_COLLECTION = "my_collection"  # Qdrant collection name
-# When using URL only, we do not supply a local "path".
 STATE_CACHE_PATH = "docs_state.json"
 PDF_CACHE_PATH = "pdf_cache.json"      # JSON file for caching PDF extraction results
 DOCS_CACHE_PATH = "docs_cache.joblib"    # Joblib cache for processed document chunks
@@ -268,10 +297,10 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
                                           docs_cache_path: str = "docs_cache.joblib",
                                           state_cache_path: str = "docs_state.json"):
     init_start = time.perf_counter()
-    # 1. Initialize the embedding model.
+    # 1. Initialize the embedding model with OS-specific device settings.
     embedding_model = SentenceTransformerEmbeddings(
         model_name="BAAI/bge-large-en-v1.5",
-        model_kwargs={"trust_remote_code": True, "device": "cuda"}
+        model_kwargs={"trust_remote_code": True, "device": device}
     )
     # 2. Compute current state of docs folder.
     current_state = get_docs_folder_state(doc_folder)
@@ -348,7 +377,7 @@ def load_existing_qdrant_store(
 
     embedding_model = SentenceTransformerEmbeddings(
         model_name="BAAI/bge-large-en-v1.5",
-        model_kwargs={"trust_remote_code": True, "device": "cuda"}
+        model_kwargs={"trust_remote_code": True, "device": device}
     )
 
     # Create Qdrant client
@@ -378,7 +407,7 @@ def load_vector_store(persist_url: str = "http://localhost:6333",
     if embedding_model is None:
         embedding_model = SentenceTransformerEmbeddings(
             model_name="BAAI/bge-large-en-v1.5",
-            model_kwargs={"trust_remote_code": True, "device": "cuda"}
+            model_kwargs={"trust_remote_code": True, "device": device}
         )
     return Qdrant.from_existing_collection(
         embedding_model,

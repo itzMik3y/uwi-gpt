@@ -7,8 +7,9 @@ import logging
 import numpy as np
 import joblib
 import json
+import platform
 
-from typing import Optional, List
+from typing import List,ClassVar, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, PrivateAttr
 from pathlib import Path
@@ -82,25 +83,50 @@ credit_prompt = PromptTemplate(
 class OllamaLLM(LLM):
     model_name: str = "llama3:8b"
     temperature: float = 0.0
+    # Annotate as a ClassVar so that Pydantic ignores it as a model field.
+    persistent_process: ClassVar[Optional[subprocess.Popen]] = None  
 
     @property
     def _llm_type(self) -> str:
         return "ollama"
 
+    def _init_persistent(self):
+        # Initialize a persistent process only on macOS.
+        if platform.system() == "Darwin":
+            self.persistent_process = subprocess.Popen(
+                ["ollama", "run", self.model_name, "p"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8"
+            )
+            logging.info("Initialized persistent LLM process on macOS.")
+
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
-        command = ["ollama", "run", self.model_name, "p"]
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8"
-        )
-        out, err = process.communicate(prompt)
-        if err:
-            logging.error(f"Ollama stderr: {err}")
-        return out
+        if platform.system() == "Darwin":
+            # Use persistent process on macOS.
+            if self.persistent_process is None:
+                self._init_persistent()
+            self.persistent_process.stdin.write(prompt + "\n")
+            self.persistent_process.stdin.flush()
+            output = self.persistent_process.stdout.readline()
+            return output
+        else:
+            # For non-macOS systems, use a new subprocess call.
+            command = ["ollama", "run", self.model_name, "p"]
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8"
+            )
+            out, err = process.communicate(prompt)
+            if err:
+                logging.error(f"Ollama stderr: {err}")
+            return out
 
     @property
     def _identifying_params(self):
