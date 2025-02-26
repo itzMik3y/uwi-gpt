@@ -18,7 +18,7 @@ from langchain.llms.base import LLM
 from langchain.schema import BaseRetriever
 
 # --- Import the Qdrant-based ingestion function ---
-from ingestion import initialize_documents_and_vector_store,load_existing_qdrant_store
+from ingestion import initialize_documents_and_vector_store, load_existing_qdrant_store
 
 # Import your custom Document class.
 from document import Document
@@ -232,26 +232,30 @@ EMBEDDINGS_CACHE = CACHE_DIR / "embeddings.joblib"
 @app.on_event("startup")
 async def startup_event():
     global docs, vector_store, embedding_model, ensemble_ret, llm
-    
+
+    startup_start = time.perf_counter()
     try:
-        # Try to load existing store first
+        load_start = time.perf_counter()
         logging.info("Attempting to load existing Qdrant store...")
         docs, vector_store, embedding_model = load_existing_qdrant_store(
             collection_name="my_collection",
             docs_cache_path="docs_cache.joblib",
             qdrant_url="http://localhost:6333"
         )
-        logging.info("Successfully loaded existing Qdrant store and cached documents.")
+        load_end = time.perf_counter()
+        logging.info(f"Successfully loaded existing Qdrant store in {load_end - load_start:.2f} seconds")
     except Exception as e:
-        # If loading fails, fall back to full initialization
+        fallback_start = time.perf_counter()
         logging.warning(f"Could not load existing store ({str(e)}). Running full initialization...")
-        # For Qdrant in-memory storage, use ':memory:'
         docs, vector_store, embedding_model = initialize_documents_and_vector_store(
             doc_folder="./docs",
             collection_name="my_collection"
         )
+        fallback_end = time.perf_counter()
+        logging.info(f"Full initialization took {fallback_end - fallback_start:.2f} seconds")
 
     # Initialize retrievers with the loaded resources
+    retriever_init_start = time.perf_counter()
     semantic_retriever = vector_store.as_retriever(search_kwargs={"k": 25})
     bm25_retriever = BM25Retriever(docs, k=25)
     mmr_retriever = vector_store.as_retriever(
@@ -264,8 +268,11 @@ async def startup_event():
         threshold=1.0
     )
     llm = OllamaLLM(model_name="llama3:8b", temperature=0.0)
+    retriever_init_end = time.perf_counter()
+    logging.info(f"Retriever and LLM initialization took {retriever_init_end - retriever_init_start:.2f} seconds")
 
-    logging.info("API Startup: All resources initialized.")
+    startup_end = time.perf_counter()
+    logging.info(f"API Startup: All resources initialized in {startup_end - startup_start:.2f} seconds.")
 
 class QueryRequest(BaseModel):
     query: str
@@ -276,29 +283,42 @@ class QueryResponse(BaseModel):
 
 @app.post("/query", response_model=QueryResponse)
 async def query_endpoint(request: QueryRequest):
-    start_time = time.perf_counter()
+    total_start = time.perf_counter()
     user_query = request.query
     logging.info(f"Received query: {user_query}")
 
     try:
         # 1. Expand the query
+        expand_start = time.perf_counter()
         expanded_queries = expand_query(user_query, llm)
+        expand_end = time.perf_counter()
+        logging.info(f"Query expansion step took {expand_end - expand_start:.2f} seconds")
 
         # 2. Retrieve documents for each expanded query
+        retrieve_start = time.perf_counter()
         all_initial_docs = []
         for eq in expanded_queries:
             docs_for_eq = ensemble_ret.get_relevant_documents(eq)
             all_initial_docs.extend(docs_for_eq)
+        retrieve_end = time.perf_counter()
+        logging.info(f"Document retrieval step took {retrieve_end - retrieve_start:.2f} seconds")
 
         # 3. Deduplicate and filter documents
+        dedup_start = time.perf_counter()
         unique_docs = {doc.metadata.get("source_file", doc.id): doc for doc in all_initial_docs}.values()
         initial_docs = list(unique_docs)
         initial_docs = filter_documents_by_metadata(initial_docs, user_query)
+        dedup_end = time.perf_counter()
+        logging.info(f"Deduplication and metadata filtering took {dedup_end - dedup_start:.2f} seconds")
 
         # 4. Re-rank with cross-encoder
+        rerank_start = time.perf_counter()
         reranked_docs = rerank_with_crossencoder(user_query, initial_docs)
+        rerank_end = time.perf_counter()
+        logging.info(f"Re-ranking step took {rerank_end - rerank_start:.2f} seconds")
 
         # 5. Choose prompt and format
+        prompt_start = time.perf_counter()
         combined_context = "\n".join([doc.page_content for doc in reranked_docs[:10]])
         if any(keyword in user_query.lower() for keyword in ["credit", "graduate", "bsc", "degree", "study"]):
             chosen_prompt = credit_prompt
@@ -306,12 +326,19 @@ async def query_endpoint(request: QueryRequest):
         else:
             chosen_prompt = default_prompt
             logging.info("Using default prompt.")
-
         prompt_str = chosen_prompt.format(context=combined_context, question=user_query)
+        prompt_end = time.perf_counter()
+        logging.info(f"Prompt selection and formatting took {prompt_end - prompt_start:.2f} seconds")
 
         # 6. Call the LLM
+        llm_start = time.perf_counter()
         answer = llm._call(prompt_str)
-        processing_time = time.perf_counter() - start_time
+        llm_end = time.perf_counter()
+        logging.info(f"LLM call took {llm_end - llm_start:.2f} seconds")
+
+        total_end = time.perf_counter()
+        processing_time = total_end - total_start
+        logging.info(f"Total processing time: {processing_time:.2f} seconds")
 
         return QueryResponse(answer=answer, processing_time=processing_time)
     except Exception as e:
