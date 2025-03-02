@@ -17,9 +17,10 @@ import nltk
 from langchain.prompts import PromptTemplate
 from langchain.llms.base import LLM
 from langchain.schema import BaseRetriever
-
+import ollama
 # --- Import the Qdrant-based ingestion function ---
 from ingestion import initialize_documents_and_vector_store, load_existing_qdrant_store
+from langchain_qdrant import RetrievalMode
 
 # Import your custom Document class.
 from document import Document
@@ -83,56 +84,53 @@ credit_prompt = PromptTemplate(
 class OllamaLLM(LLM):
     model_name: str = "llama3:8b"
     temperature: float = 0.0
-    persistent_process: ClassVar[Optional[subprocess.Popen]] = None
-
+    _chat_history: ClassVar[List[dict]] = []
+    
     @property
     def _llm_type(self) -> str:
         return "ollama"
-
-    def _init_persistent(self):
-        # Initialize a persistent process only on macOS.
-        if platform.system() == "Darwin":
-            OllamaLLM.persistent_process = subprocess.Popen(
-                ["ollama", "run", self.model_name, "p"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8"
-            )
-            logging.info("Initialized persistent LLM process on macOS.")
-
+    
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
-        if platform.system() == "Darwin":
-            # Use persistent process on macOS.
-            if OllamaLLM.persistent_process is None:
-                self._init_persistent()
-            # Write prompt to the persistent process and flush.
-            OllamaLLM.persistent_process.stdin.write(prompt + "\n")
-            OllamaLLM.persistent_process.stdin.flush()
-            # Read one line from stdout (adjust as needed)
-            output = OllamaLLM.persistent_process.stdout.readline()
-            return output
-        else:
-            # For non-macOS systems, use a new subprocess call.
-            command = ["ollama", "run", self.model_name, "p"]
-            process = subprocess.Popen(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8"
+        try:
+            # Add the user's message to the chat history
+            self._chat_history.append({"role": "user", "content": prompt})
+            
+            # Use ollama.chat to maintain context across calls
+            response = ollama.chat(
+                model=self.model_name,
+                messages=self._chat_history,
+                options={
+                    "temperature": self.temperature,
+                    # Add other options as needed
+                    # "num_predict": 128,
+                    # "top_k": 40,
+                    # "top_p": 0.9,
+                }
             )
-            out, err = process.communicate(prompt)
-            if err:
-                logging.error(f"Ollama stderr: {err}")
-            return out
-
+            
+            # Extract the assistant's message from the response
+            assistant_message = response.get('message', {}).get('content', '')
+            
+            # Add the assistant's response to the chat history
+            self._chat_history.append({"role": "assistant", "content": assistant_message})
+            
+            # Keep chat history to a reasonable size to prevent context overflow
+            if len(self._chat_history) > 20:  # Adjust this limit as needed
+                # Remove oldest messages but keep the most recent ones
+                self._chat_history = self._chat_history[-20:]
+            
+            return assistant_message
+        except Exception as e:
+            logging.error(f"Error calling Ollama chat: {str(e)}")
+            return f"Error generating response: {str(e)}"
+    
+    def clear_history(self):
+        """Clear the chat history."""
+        self._chat_history = []
+    
     @property
     def _identifying_params(self):
         return {"model_name": self.model_name, "temperature": self.temperature}
-
 # --------------------------------------------------------------------------
 # BM25 Retriever
 # --------------------------------------------------------------------------
@@ -258,23 +256,43 @@ EMBEDDINGS_CACHE = CACHE_DIR / "embeddings.joblib"
 
 @app.on_event("startup")
 async def startup_event():
-    global docs, vector_store, embedding_model, ensemble_ret, llm
+    global docs, vector_store, embedding_model, sparse_embeddings, ensemble_ret, hybrid_ret, llm
 
     startup_start = time.perf_counter()
     try:
         load_start = time.perf_counter()
         logging.info("Attempting to load existing Qdrant store...")
-        docs, vector_store, embedding_model = load_existing_qdrant_store(
-            collection_name="my_collection",
-            docs_cache_path="docs_cache.joblib",
-            qdrant_url="http://localhost:6333"
-        )
-        load_end = time.perf_counter()
-        logging.info(f"Successfully loaded existing Qdrant store in {load_end - load_start:.2f} seconds")
+        try:
+            # First try to load with force_recreate=False
+            docs, vector_store, dense_embeddings, sparse_embeddings = load_existing_qdrant_store(
+                collection_name="my_collection",
+                docs_cache_path="docs_cache.joblib",
+                qdrant_url="http://localhost:6333",
+                force_recreate=False
+            )
+            load_end = time.perf_counter()
+            logging.info(f"Successfully loaded existing Qdrant store in {load_end - load_start:.2f} seconds")
+        except Exception as e:
+            if "does not contain sparse vectors" in str(e):
+                logging.warning(f"Collection exists but doesn't support hybrid search: {e}")
+                logging.info("Recreating collection with hybrid search support...")
+                
+                # Try again with force_recreate=True
+                docs, vector_store, dense_embeddings, sparse_embeddings = load_existing_qdrant_store(
+                    collection_name="my_collection",
+                    docs_cache_path="docs_cache.joblib",
+                    qdrant_url="http://localhost:6333",
+                    force_recreate=True
+                )
+                load_end = time.perf_counter()
+                logging.info(f"Successfully recreated Qdrant store with hybrid search in {load_end - load_start:.2f} seconds")
+            else:
+                # If it's a different error, fall back to full initialization
+                raise e
     except Exception as e:
         fallback_start = time.perf_counter()
         logging.warning(f"Could not load existing store ({str(e)}). Running full initialization...")
-        docs, vector_store, embedding_model = initialize_documents_and_vector_store(
+        docs, vector_store, dense_embeddings, sparse_embeddings = initialize_documents_and_vector_store(
             doc_folder="./docs",
             collection_name="my_collection"
         )
@@ -283,18 +301,30 @@ async def startup_event():
 
     # Initialize retrievers with the loaded resources
     retriever_init_start = time.perf_counter()
+    
+    # Standard semantic retriever (dense embeddings only)
+    vector_store.retrieval_mode = RetrievalMode.DENSE
     semantic_retriever = vector_store.as_retriever(search_kwargs={"k": 25})
+    
+    # BM25 retriever for traditional keyword search
     bm25_retriever = BM25Retriever(docs, k=25)
-    mmr_retriever = vector_store.as_retriever(
-        search_type="mmr", search_kwargs={"k": 25, "fetch_k": 30, "lambda_mult": 0.5}
-    )
+    
+    
+    # Hybrid retriever that combines dense and sparse embeddings
+    vector_store.retrieval_mode = RetrievalMode.HYBRID
+    hybrid_ret = vector_store.as_retriever(search_kwargs={"k": 25})
 
+    # Ensemble retriever that combines multiple retrievers with different weights
     ensemble_ret = EnsembleRetriever(
-        retrievers=[semantic_retriever, bm25_retriever, mmr_retriever],
-        weights=[1.0, 0.9, 0.9],
-        threshold=1.0
+        retrievers=[hybrid_ret, semantic_retriever, bm25_retriever],
+        weights=[1.2, 1.0, 0.9],  # Give higher weight to hybrid retriever
+        threshold=0.1
     )
+    
+    # Initialize the LLM
+    embedding_model = dense_embeddings  # For compatibility with the rest of the code
     llm = OllamaLLM(model_name="llama3:8b", temperature=0.0)
+    
     retriever_init_end = time.perf_counter()
     logging.info(f"Retriever and LLM initialization took {retriever_init_end - retriever_init_start:.2f} seconds")
 
