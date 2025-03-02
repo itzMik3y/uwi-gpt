@@ -9,7 +9,7 @@ import joblib
 import json
 import platform
 
-from typing import List,ClassVar, Optional
+from typing import Optional, List
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, PrivateAttr
 from pathlib import Path
@@ -19,8 +19,12 @@ from langchain.llms.base import LLM
 from langchain.schema import BaseRetriever
 import ollama
 # --- Import the Qdrant-based ingestion function ---
+<<<<<<< HEAD:backend/api.py
 from ingestion import initialize_documents_and_vector_store, load_existing_qdrant_store
 from langchain_qdrant import RetrievalMode
+=======
+from ingestion import initialize_documents_and_vector_store,load_existing_qdrant_store
+>>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
 
 # Import your custom Document class.
 from document import Document
@@ -84,6 +88,7 @@ credit_prompt = PromptTemplate(
 class OllamaLLM(LLM):
     model_name: str = "llama3:8b"
     temperature: float = 0.0
+<<<<<<< HEAD:backend/api.py
     _chat_history: ClassVar[List[dict]] = []
     
     @property
@@ -128,6 +133,28 @@ class OllamaLLM(LLM):
         """Clear the chat history."""
         self._chat_history = []
     
+=======
+
+    @property
+    def _llm_type(self) -> str:
+        return "ollama"
+
+    def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
+        command = ["ollama", "run", self.model_name, "p"]
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8"
+        )
+        out, err = process.communicate(prompt)
+        if err:
+            logging.error(f"Ollama stderr: {err}")
+        return out
+
+>>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
     @property
     def _identifying_params(self):
         return {"model_name": self.model_name, "temperature": self.temperature}
@@ -256,12 +283,18 @@ EMBEDDINGS_CACHE = CACHE_DIR / "embeddings.joblib"
 
 @app.on_event("startup")
 async def startup_event():
+<<<<<<< HEAD:backend/api.py
     global docs, vector_store, embedding_model, sparse_embeddings, ensemble_ret, hybrid_ret, llm
 
     startup_start = time.perf_counter()
+=======
+    global docs, vector_store, embedding_model, ensemble_ret, llm
+    
+>>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
     try:
-        load_start = time.perf_counter()
+        # Try to load existing store first
         logging.info("Attempting to load existing Qdrant store...")
+<<<<<<< HEAD:backend/api.py
         try:
             # First try to load with force_recreate=False
             docs, vector_store, dense_embeddings, sparse_embeddings = load_existing_qdrant_store(
@@ -289,21 +322,35 @@ async def startup_event():
             else:
                 # If it's a different error, fall back to full initialization
                 raise e
+=======
+        docs, vector_store, embedding_model = load_existing_qdrant_store(
+            collection_name="my_collection",
+            docs_cache_path="docs_cache.joblib",
+            qdrant_url="http://localhost:6333"
+        )
+        logging.info("Successfully loaded existing Qdrant store and cached documents.")
+>>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
     except Exception as e:
-        fallback_start = time.perf_counter()
+        # If loading fails, fall back to full initialization
         logging.warning(f"Could not load existing store ({str(e)}). Running full initialization...")
+<<<<<<< HEAD:backend/api.py
         docs, vector_store, dense_embeddings, sparse_embeddings = initialize_documents_and_vector_store(
+=======
+        # For Qdrant in-memory storage, use ':memory:'
+        docs, vector_store, embedding_model = initialize_documents_and_vector_store(
+>>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
             doc_folder="./docs",
             collection_name="my_collection"
         )
-        fallback_end = time.perf_counter()
-        logging.info(f"Full initialization took {fallback_end - fallback_start:.2f} seconds")
 
     # Initialize retrievers with the loaded resources
+<<<<<<< HEAD:backend/api.py
     retriever_init_start = time.perf_counter()
     
     # Standard semantic retriever (dense embeddings only)
     vector_store.retrieval_mode = RetrievalMode.DENSE
+=======
+>>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
     semantic_retriever = vector_store.as_retriever(search_kwargs={"k": 25})
     
     # BM25 retriever for traditional keyword search
@@ -324,12 +371,14 @@ async def startup_event():
     # Initialize the LLM
     embedding_model = dense_embeddings  # For compatibility with the rest of the code
     llm = OllamaLLM(model_name="llama3:8b", temperature=0.0)
+<<<<<<< HEAD:backend/api.py
     
     retriever_init_end = time.perf_counter()
     logging.info(f"Retriever and LLM initialization took {retriever_init_end - retriever_init_start:.2f} seconds")
+=======
+>>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
 
-    startup_end = time.perf_counter()
-    logging.info(f"API Startup: All resources initialized in {startup_end - startup_start:.2f} seconds.")
+    logging.info("API Startup: All resources initialized.")
 
 class QueryRequest(BaseModel):
     query: str
@@ -340,42 +389,29 @@ class QueryResponse(BaseModel):
 
 @app.post("/query", response_model=QueryResponse)
 async def query_endpoint(request: QueryRequest):
-    total_start = time.perf_counter()
+    start_time = time.perf_counter()
     user_query = request.query
     logging.info(f"Received query: {user_query}")
 
     try:
         # 1. Expand the query
-        expand_start = time.perf_counter()
         expanded_queries = expand_query(user_query, llm)
-        expand_end = time.perf_counter()
-        logging.info(f"Query expansion step took {expand_end - expand_start:.2f} seconds")
 
         # 2. Retrieve documents for each expanded query
-        retrieve_start = time.perf_counter()
         all_initial_docs = []
         for eq in expanded_queries:
             docs_for_eq = ensemble_ret.get_relevant_documents(eq)
             all_initial_docs.extend(docs_for_eq)
-        retrieve_end = time.perf_counter()
-        logging.info(f"Document retrieval step took {retrieve_end - retrieve_start:.2f} seconds")
 
         # 3. Deduplicate and filter documents
-        dedup_start = time.perf_counter()
         unique_docs = {doc.metadata.get("source_file", doc.id): doc for doc in all_initial_docs}.values()
         initial_docs = list(unique_docs)
         initial_docs = filter_documents_by_metadata(initial_docs, user_query)
-        dedup_end = time.perf_counter()
-        logging.info(f"Deduplication and metadata filtering took {dedup_end - dedup_start:.2f} seconds")
 
         # 4. Re-rank with cross-encoder
-        rerank_start = time.perf_counter()
         reranked_docs = rerank_with_crossencoder(user_query, initial_docs)
-        rerank_end = time.perf_counter()
-        logging.info(f"Re-ranking step took {rerank_end - rerank_start:.2f} seconds")
 
         # 5. Choose prompt and format
-        prompt_start = time.perf_counter()
         combined_context = "\n".join([doc.page_content for doc in reranked_docs[:10]])
         if any(keyword in user_query.lower() for keyword in ["credit", "graduate", "bsc", "degree", "study"]):
             chosen_prompt = credit_prompt
@@ -383,19 +419,12 @@ async def query_endpoint(request: QueryRequest):
         else:
             chosen_prompt = default_prompt
             logging.info("Using default prompt.")
+
         prompt_str = chosen_prompt.format(context=combined_context, question=user_query)
-        prompt_end = time.perf_counter()
-        logging.info(f"Prompt selection and formatting took {prompt_end - prompt_start:.2f} seconds")
 
         # 6. Call the LLM
-        llm_start = time.perf_counter()
         answer = llm._call(prompt_str)
-        llm_end = time.perf_counter()
-        logging.info(f"LLM call took {llm_end - llm_start:.2f} seconds")
-
-        total_end = time.perf_counter()
-        processing_time = total_end - total_start
-        logging.info(f"Total processing time: {processing_time:.2f} seconds")
+        processing_time = time.perf_counter() - start_time
 
         return QueryResponse(answer=answer, processing_time=processing_time)
     except Exception as e:
