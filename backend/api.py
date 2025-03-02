@@ -9,7 +9,7 @@ import joblib
 import json
 import platform
 
-from typing import Optional, List
+from typing import Optional, List, ClassVar
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, PrivateAttr
 from pathlib import Path
@@ -19,12 +19,8 @@ from langchain.llms.base import LLM
 from langchain.schema import BaseRetriever
 import ollama
 # --- Import the Qdrant-based ingestion function ---
-<<<<<<< HEAD:backend/api.py
 from ingestion import initialize_documents_and_vector_store, load_existing_qdrant_store
 from langchain_qdrant import RetrievalMode
-=======
-from ingestion import initialize_documents_and_vector_store,load_existing_qdrant_store
->>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
 
 # Import your custom Document class.
 from document import Document
@@ -88,7 +84,6 @@ credit_prompt = PromptTemplate(
 class OllamaLLM(LLM):
     model_name: str = "llama3:8b"
     temperature: float = 0.0
-<<<<<<< HEAD:backend/api.py
     _chat_history: ClassVar[List[dict]] = []
     
     @property
@@ -133,28 +128,6 @@ class OllamaLLM(LLM):
         """Clear the chat history."""
         self._chat_history = []
     
-=======
-
-    @property
-    def _llm_type(self) -> str:
-        return "ollama"
-
-    def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
-        command = ["ollama", "run", self.model_name, "p"]
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8"
-        )
-        out, err = process.communicate(prompt)
-        if err:
-            logging.error(f"Ollama stderr: {err}")
-        return out
-
->>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
     @property
     def _identifying_params(self):
         return {"model_name": self.model_name, "temperature": self.temperature}
@@ -280,21 +253,14 @@ CACHE_DIR = Path("./cache")
 DOCS_CACHE = CACHE_DIR / "docs.joblib"
 VECTORS_CACHE = CACHE_DIR / "vectors.joblib"
 EMBEDDINGS_CACHE = CACHE_DIR / "embeddings.joblib"
-
 @app.on_event("startup")
 async def startup_event():
-<<<<<<< HEAD:backend/api.py
     global docs, vector_store, embedding_model, sparse_embeddings, ensemble_ret, hybrid_ret, llm
 
     startup_start = time.perf_counter()
-=======
-    global docs, vector_store, embedding_model, ensemble_ret, llm
-    
->>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
     try:
-        # Try to load existing store first
+        load_start = time.perf_counter()
         logging.info("Attempting to load existing Qdrant store...")
-<<<<<<< HEAD:backend/api.py
         try:
             # First try to load with force_recreate=False
             docs, vector_store, dense_embeddings, sparse_embeddings = load_existing_qdrant_store(
@@ -322,40 +288,30 @@ async def startup_event():
             else:
                 # If it's a different error, fall back to full initialization
                 raise e
-=======
-        docs, vector_store, embedding_model = load_existing_qdrant_store(
-            collection_name="my_collection",
-            docs_cache_path="docs_cache.joblib",
-            qdrant_url="http://localhost:6333"
-        )
-        logging.info("Successfully loaded existing Qdrant store and cached documents.")
->>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
     except Exception as e:
-        # If loading fails, fall back to full initialization
+        fallback_start = time.perf_counter()
         logging.warning(f"Could not load existing store ({str(e)}). Running full initialization...")
-<<<<<<< HEAD:backend/api.py
         docs, vector_store, dense_embeddings, sparse_embeddings = initialize_documents_and_vector_store(
-=======
-        # For Qdrant in-memory storage, use ':memory:'
-        docs, vector_store, embedding_model = initialize_documents_and_vector_store(
->>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
             doc_folder="./docs",
             collection_name="my_collection"
         )
+        fallback_end = time.perf_counter()
+        logging.info(f"Full initialization took {fallback_end - fallback_start:.2f} seconds")
 
     # Initialize retrievers with the loaded resources
-<<<<<<< HEAD:backend/api.py
     retriever_init_start = time.perf_counter()
     
     # Standard semantic retriever (dense embeddings only)
     vector_store.retrieval_mode = RetrievalMode.DENSE
-=======
->>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
     semantic_retriever = vector_store.as_retriever(search_kwargs={"k": 25})
     
     # BM25 retriever for traditional keyword search
     bm25_retriever = BM25Retriever(docs, k=25)
     
+    # MMR retriever for diversifying results
+    # mmr_retriever = vector_store.as_retriever(
+    #     search_type="mmr", search_kwargs={"k": 25, "fetch_k": 30, "lambda_mult": 0.5}
+    # )
     
     # Hybrid retriever that combines dense and sparse embeddings
     vector_store.retrieval_mode = RetrievalMode.HYBRID
@@ -371,14 +327,12 @@ async def startup_event():
     # Initialize the LLM
     embedding_model = dense_embeddings  # For compatibility with the rest of the code
     llm = OllamaLLM(model_name="llama3:8b", temperature=0.0)
-<<<<<<< HEAD:backend/api.py
     
     retriever_init_end = time.perf_counter()
     logging.info(f"Retriever and LLM initialization took {retriever_init_end - retriever_init_start:.2f} seconds")
-=======
->>>>>>> e01cd7dfb67dd1b5d59a9ecdcd4b4759f0381c87:api.py
 
-    logging.info("API Startup: All resources initialized.")
+    startup_end = time.perf_counter()
+    logging.info(f"API Startup: All resources initialized in {startup_end - startup_start:.2f} seconds.")
 
 class QueryRequest(BaseModel):
     query: str
