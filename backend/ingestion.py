@@ -31,7 +31,10 @@ from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_qdrant import QdrantVectorStore, FastEmbedSparse, RetrievalMode
 from langchain_core.documents import Document as LangchainDocument
 from document import Document
-
+from docling.document_converter import DocumentConverter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import MarkdownTextSplitter
+from langchain_text_splitters import SentenceTransformersTokenTextSplitter
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # --- OS-specific Device Setup ---
@@ -133,65 +136,140 @@ def save_pdf_cache(cache: Dict[str, str]):
     except Exception as e:
         logging.error(f"Error saving PDF cache: {e}")
 
-def load_pdf_with_tables(filepath: str) -> str:
-    texts = []
-    table_settings = {
-        "vertical_strategy": "lines",
-        "horizontal_strategy": "lines",
-        "intersection_tolerance": 5,
-    }
+def load_pdf_as_markdown(filepath: str) -> str:
+    """
+    Load a PDF file and convert its content to Markdown format using Docling with EasyOCR.
+    Uses platform-specific hardware acceleration detection.
+    
+    Args:
+        filepath: Path to the PDF file.
+        
+    Returns:
+        Markdown-formatted string representation of the PDF content.
+    """
+    import time
+    import os
+    import platform
+    from docling_core.types.doc import ImageRefMode
+    
     try:
-        with pdfplumber.open(filepath) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text() or ""
-                table_texts = []
-                tables = page.extract_tables(table_settings=table_settings)
-                if tables:
-                    for table in tables:
-                        if not any(cell and cell.strip() for row in table for cell in row):
-                            continue
-                        header = [str(cell).strip() if cell else "" for cell in table[0]]
-                        rows = table[1:]
-                        md_table = "| " + " | ".join(header) + " |\n"
-                        md_table += "| " + " | ".join(["---"] * len(header)) + " |\n"
-                        for row in rows:
-                            row = [str(cell).strip() if cell else "" for cell in row]
-                            md_table += "| " + " | ".join(row) + " |\n"
-                        table_texts.append(md_table)
-                combined = page_text.strip()
-                if table_texts:
-                    combined = (combined + "\n" if combined else "") + "\n".join(table_texts)
-                if combined:
-                    texts.append(combined)
-        full_text = "\n\n".join(texts)
-        if not full_text.strip() and fitz is not None:
-            logging.info(f"pdfplumber extracted no text for {filepath}. Using PyMuPDF fallback.")
-            doc = fitz.open(filepath)
-            full_text = "\n\n".join(page.get_text("text") for page in doc)
-        return full_text
-    except Exception as e:
-        logging.error(f"Error reading PDF {filepath}: {e}")
-        return ""
-
-def process_file(file_path: str, filename: str, cache: Dict[str, str]) -> List[Document]:
-    docs = []
-    if filename.lower().endswith('.pdf'):
-        checksum = compute_checksum(file_path)
-        if checksum in cache:
-            text = cache[checksum]
-            logging.info(f"Loaded cached text for {filename}")
+        filename = os.path.basename(filepath)
+        logging.info(f"Processing document {filename}")
+        
+        start_time = time.time()
+        
+        # Import required Docling components
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import (
+            AcceleratorDevice,
+            AcceleratorOptions,
+            PdfPipelineOptions,
+            TableFormerMode
+        )
+        from docling.datamodel.settings import settings
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        
+        # Determine the best accelerator based on the platform
+        if platform.system() == "Darwin":
+            # On Mac, use MPS (Metal Performance Shaders) if available
+            if 'torch' in globals() and torch and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                accel_device = AcceleratorDevice.MPS
+                logging.info("Using MPS acceleration on Mac")
+            else:
+                accel_device = AcceleratorDevice.CPU
+                logging.info("Using CPU acceleration on Mac")
         else:
-            text = load_pdf_with_tables(file_path)
-            cache[checksum] = text
-            logging.info(f"Cached text for {filename}")
-        if not text.strip():
-            logging.warning(f"Skipping {filename} as no text was extracted.")
-            return []
-        docs.append(Document(page_content=text, metadata={"source_file": filename}))
-    elif filename.lower().endswith('.txt'):
-        loader = TextLoader(file_path)
-        docs = loader.load()
-    return docs
+            # On Windows/Linux, use CUDA if available
+            if 'torch' in globals() and torch and torch.cuda.is_available():
+                accel_device = AcceleratorDevice.CUDA
+                logging.info("Using CUDA acceleration")
+            else:
+                accel_device = AcceleratorDevice.CPU
+                logging.info("Using CPU acceleration")
+        
+        # Utilize logical processors effectively
+        num_threads = 12  # Good value for high-end systems with 16 logical processors
+        
+        accelerator_options = AcceleratorOptions(
+            num_threads=num_threads,
+            device=accel_device
+        )
+        
+        # Configure pipeline options with high-quality table processing
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.accelerator_options = accelerator_options
+        pipeline_options.do_ocr = True
+        pipeline_options.do_table_structure = True
+        pipeline_options.generate_page_images = False  # Better performance
+        
+        # Default OCR is EasyOCR - just set language
+        pipeline_options.ocr_options.lang = ["en"]  # EasyOCR uses "en" for English
+        
+        # Use ACCURATE mode for TableFormer
+        pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
+        pipeline_options.table_structure_options.do_cell_matching = True
+        
+        # Configure converter
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(
+                    pipeline_options=pipeline_options
+                )
+            }
+        )
+        
+        # Enable profiling
+        settings.debug.profile_pipeline_timings = True
+        
+        # Optional: Set environment variable for OpenMP threads
+        os.environ["OMP_NUM_THREADS"] = str(num_threads)
+        
+        # Convert the document
+        conversion_result = converter.convert(filepath)
+        
+        # Export to markdown with placeholder images
+        markdown_content = conversion_result.document.export_to_markdown(
+            image_mode=ImageRefMode.PLACEHOLDER
+        )
+        
+        # Get timing information
+        doc_conversion_secs = 0
+        if hasattr(conversion_result, 'timings') and isinstance(conversion_result.timings, dict):
+            if "pipeline_total" in conversion_result.timings and "times" in conversion_result.timings["pipeline_total"]:
+                doc_conversion_secs = sum(conversion_result.timings["pipeline_total"]["times"])
+                
+        end_time = time.time()
+        total_time = end_time - start_time
+        logging.info(f"Finished converting document {filename} in {total_time:.2f} sec. Pipeline time: {doc_conversion_secs:.2f} sec.")
+        
+        # Add a title if not present
+        title = os.path.basename(filepath).replace('.pdf', '')
+        if not markdown_content.strip().startswith("# "):
+            markdown_content = f"# {title}\n\n{markdown_content}"
+            
+        return markdown_content
+            
+    except Exception as e:
+        logging.error(f"Error converting PDF to Markdown using Docling for {filepath}: {e}")
+        return ""  # Return empty string on error
+        
+    finally:
+        # Force garbage collection to help with memory leaks
+        import gc
+        gc.collect()
+        
+        # Clear acceleration cache based on platform
+        if platform.system() == "Darwin":
+            if 'torch' in globals() and torch and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                # Clear MPS cache if there's a way to do so
+                pass
+        else:
+            if 'torch' in globals() and torch and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+
+
+
 
 def get_docs_folder_state(doc_folder: str) -> Dict[str, float]:
     state = {}
@@ -202,254 +280,145 @@ def get_docs_folder_state(doc_folder: str) -> Dict[str, float]:
     return state
 
 def load_and_clean_documents(doc_folder: str) -> List[Document]:
+    """
+    Load and clean documents using concurrent processing for better performance.
+    """
     start_time = time.perf_counter()
     heading_regex = re.compile(r"^(?:[A-Z0-9 .-]+)$")
     documents = []
     pdf_cache = load_pdf_cache()
-    file_list = [fn for fn in os.listdir(doc_folder) if fn.lower().endswith(('.pdf', '.txt'))]
-    chunk_size = 3
-    for i in range(0, len(file_list), chunk_size):
-        batch = file_list[i:i + chunk_size]
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            futures = {
-                executor.submit(process_file, os.path.join(doc_folder, filename), filename, pdf_cache): filename
-                for filename in batch
-            }
-            for future in concurrent.futures.as_completed(futures):
-                filename = futures[future]
-                try:
-                    docs = future.result()
-                except Exception as exc:
-                    logging.error(f"Error processing {filename}: {exc}")
+    
+    # Get list of PDF and text files
+    pdf_files = [os.path.join(doc_folder, fn) for fn in os.listdir(doc_folder) 
+                if fn.lower().endswith('.pdf')]
+    txt_files = [os.path.join(doc_folder, fn) for fn in os.listdir(doc_folder) 
+                if fn.lower().endswith('.txt')]
+    
+    # Process files with concurrency
+    logging.info(f"Processing {len(pdf_files)} PDF files and {len(txt_files)} text files with concurrency")
+    
+    def process_pdf_file(file_path):
+        filename = os.path.basename(file_path)
+        try:
+            # Try to load from disk first (fastest method)
+            markdown_dir = "./markdown_cache"  # You can make this configurable
+            markdown_content = load_markdown_from_disk(file_path, markdown_dir)
+            
+            if markdown_content is not None:
+                # Found markdown on disk, use it directly
+                logging.info(f"Using disk-cached markdown for {filename}")
+            else:
+                # Try memory cache next
+                checksum = compute_checksum(file_path)
+                if checksum in pdf_cache:
+                    markdown_content = pdf_cache[checksum]
+                    logging.info(f"Using memory-cached text for {filename}")
+                    # Save to disk for next time
+                    save_markdown_to_disk(file_path, markdown_content, markdown_dir)
+                else:
+                    # Not in any cache, convert from PDF
+                    markdown_content = load_pdf_as_markdown(file_path)
+                    pdf_cache[checksum] = markdown_content
+                    logging.info(f"Converted PDF to markdown for {filename}")
+                    # Save to disk for next time
+                    save_markdown_to_disk(file_path, markdown_content, markdown_dir)
+                    
+            # Skip if no text was extracted
+            if not markdown_content.strip():
+                logging.warning(f"Skipping {filename} as no text was extracted")
+                return None
+            
+            # Create document object
+            doc = Document(
+                page_content=markdown_content, 
+                metadata={"source_file": filename, "format": "markdown"}
+            )
+            
+            # Clean and process the document
+            cleaned = re.sub(r'[ \t]{2,}', ' ', doc.page_content).strip()
+            if not cleaned:
+                return None
+                
+            doc.page_content = cleaned
+            possible_heading = cleaned.split('\n', 1)[0].strip()
+            doc.metadata["heading"] = possible_heading if heading_regex.match(possible_heading) else "N/A"
+            
+            logging.info(f"Processed and added {filename}")
+            return doc
+            
+        except Exception as exc:
+            logging.error(f"Error processing PDF file {filename}: {exc}")
+            return None
+    
+    def process_txt_file(file_path):
+        filename = os.path.basename(file_path)
+        try:
+            logging.info(f"Processing text file {filename}")
+            
+            loader = TextLoader(file_path)
+            txt_docs = loader.load()
+            
+            result_docs = []
+            # Add format metadata
+            for doc in txt_docs:
+                doc.metadata["format"] = "text"
+                cleaned = re.sub(r'[ \t]{2,}', ' ', doc.page_content).strip()
+                if not cleaned:
                     continue
-                for doc in docs:
-                    cleaned = re.sub(r'[ \t]{2,}', ' ', doc.page_content).strip()
-                    if not cleaned:
-                        continue
-                    doc.page_content = cleaned
-                    possible_heading = cleaned.split('\n', 1)[0].strip()
-                    doc.metadata["heading"] = possible_heading if heading_regex.match(possible_heading) else "N/A"
-                    if "source_file" not in doc.metadata:
-                        doc.metadata["source_file"] = filename
+                    
+                doc.page_content = cleaned
+                possible_heading = cleaned.split('\n', 1)[0].strip()
+                doc.metadata["heading"] = possible_heading if heading_regex.match(possible_heading) else "N/A"
+                if "source_file" not in doc.metadata:
+                    doc.metadata["source_file"] = filename
+                    
+                # Convert to our Document class
+                result_docs.append(Document(
+                    page_content=doc.page_content,
+                    metadata=doc.metadata
+                ))
+            
+            logging.info(f"Added text file {filename}")
+            return result_docs
+            
+        except Exception as exc:
+            logging.error(f"Error processing text file {filename}: {exc}")
+            return []
+    
+    # Use ThreadPoolExecutor for concurrent processing
+    from concurrent.futures import ThreadPoolExecutor
+    
+    # For PDF files: determine optimal number of workers based on GPU or CPU usage
+    # When using GPU, we don't want too many concurrent PDF processes
+    pdf_workers = 3 if ('torch' in globals() and torch and torch.cuda.is_available()) else min(4, max(1, os.cpu_count() // 2))
+    # For text files, we can use more workers
+    txt_workers = min(8, max(1, os.cpu_count()))
+    
+    # Process PDF files with limited concurrency - prevents GPU memory issues
+    if pdf_files:
+        logging.info(f"Processing PDFs with {pdf_workers} workers (GPU detected: {'Yes' if 'torch' in globals() and torch and torch.cuda.is_available() else 'No'})")
+        with ThreadPoolExecutor(max_workers=pdf_workers) as executor:
+            pdf_results = list(executor.map(process_pdf_file, pdf_files))
+            for doc in pdf_results:
+                if doc is not None:
                     documents.append(doc)
+    
+    # Process text files with more concurrency - no GPU concerns
+    if txt_files:
+        logging.info(f"Processing text files with {txt_workers} workers")
+        with ThreadPoolExecutor(max_workers=txt_workers) as executor:
+            txt_results = list(executor.map(process_txt_file, txt_files))
+            for doc_list in txt_results:
+                if doc_list:
+                    documents.extend(doc_list)
+    
+    # Save the updated cache
     save_pdf_cache(pdf_cache)
+    
     end_time = time.perf_counter()
-    logging.info(f"Document loading and cleaning took {end_time - start_time:.2f} seconds")
+    logging.info(f"Document loading and cleaning took {end_time - start_time:.2f} seconds. Loaded {len(documents)} documents.")
     return documents
 
-def improved_document_chunking(
-    documents: List[Document], 
-    target_chunk_size: int = 512, 
-    chunk_overlap: int = 50,
-    respect_section_boundaries: bool = True,
-    preserve_metadata: bool = True
-) -> List[Document]:
-    """
-    Advanced document chunking with multiple improvements.
-    
-    Args:
-        documents: List of Document objects to chunk
-        target_chunk_size: Target number of tokens per chunk
-        chunk_overlap: Number of tokens to overlap between chunks
-        respect_section_boundaries: Whether to respect section headers as chunk boundaries
-        preserve_metadata: Whether to preserve and enhance metadata
-        
-    Returns:
-        List of chunked Document objects
-    """
-    start_time = time.perf_counter()
-    
-    # Ensure NLTK resources are available
-    try:
-        nltk.data.find('tokenizers/punkt')
-    except LookupError:
-        nltk.download('punkt')
-    
-    # Improved section header detection
-    header_patterns = [
-        # Numbered sections like "1.2.3 Section Name"
-        r'^\s*\d+(?:\.\d+)*\s+[A-Z][A-Za-z\s]+\s*$',
-        # Capitalized headings
-        r'^\s*[A-Z][A-Z\s]{2,}[A-Z]\s*$',
-        # Title case headings like "Section Title Here"
-        r'^\s*(?:[A-Z][a-z]+\s+){2,}[A-Z][a-z]+\s*$'
-    ]
-    header_regex = re.compile('|'.join(f'({pattern})' for pattern in header_patterns))
-    
-    # Additional paragraph boundary patterns
-    paragraph_breaks = [
-        r'\n\s*\n',      # Double line breaks
-        r'\n\t',         # Tabbed new line
-        r'\n\s{4,}',     # Indented text (4+ spaces)
-    ]
-    paragraph_regex = re.compile('|'.join(paragraph_breaks))
-    
-    new_docs = []
-    
-    for doc in documents:
-        # Extract any headings from metadata if available
-        current_heading = doc.metadata.get('heading', None)
-        
-        # Split text into paragraphs first for better semantic grouping
-        paragraphs = paragraph_regex.split(doc.page_content)
-        paragraphs = [p.strip() for p in paragraphs if p.strip()]
-        
-        current_chunk = []
-        current_chunk_text = ""
-        current_token_count = 0
-        
-        for paragraph in paragraphs:
-            # Check if this paragraph is a header
-            if respect_section_boundaries and header_regex.match(paragraph):
-                # Complete previous chunk if it exists
-                if current_chunk:
-                    new_doc = Document(
-                        page_content=" ".join(current_chunk),
-                        metadata=doc.metadata.copy()
-                    )
-                    if current_heading:
-                        new_doc.metadata['heading'] = current_heading
-                    new_docs.append(new_doc)
-                    
-                # Update the current heading
-                current_heading = paragraph
-                current_chunk = []
-                current_chunk_text = ""
-                current_token_count = 0
-                continue
-            
-            # Get sentences from paragraph
-            sentences = nltk.sent_tokenize(paragraph)
-            
-            for sentence in sentences:
-                # Ensure we're using the same tokenizer consistently
-                tokens = tokenizer.tokenize(sentence)
-                sentence_token_count = len(tokens)
-                
-                # If this sentence alone exceeds chunk size, split it further
-                if sentence_token_count > target_chunk_size:
-                    if current_chunk:
-                        new_doc = Document(
-                            page_content=" ".join(current_chunk),
-                            metadata=doc.metadata.copy()
-                        )
-                        if current_heading:
-                            new_doc.metadata['heading'] = current_heading
-                        new_docs.append(new_doc)
-                        current_chunk = []
-                        current_chunk_text = ""
-                        current_token_count = 0
-                    
-                    # Process long sentence in smaller pieces
-                    words = sentence.split()
-                    current_piece = []
-                    current_piece_count = 0
-                    
-                    for word in words:
-                        word_tokens = tokenizer.tokenize(word)
-                        if current_piece_count + len(word_tokens) > target_chunk_size and current_piece:
-                            new_doc = Document(
-                                page_content=" ".join(current_piece),
-                                metadata=doc.metadata.copy()
-                            )
-                            if current_heading:
-                                new_doc.metadata['heading'] = current_heading
-                            new_docs.append(new_doc)
-                            current_piece = [word]
-                            current_piece_count = len(word_tokens)
-                        else:
-                            current_piece.append(word)
-                            current_piece_count += len(word_tokens)
-                    
-                    if current_piece:
-                        current_chunk = current_piece
-                        current_token_count = current_piece_count
-                        current_chunk_text = " ".join(current_piece)
-                
-                # Regular case - add sentence to current chunk if it fits
-                elif current_token_count + sentence_token_count > target_chunk_size:
-                    # Finish current chunk
-                    new_doc = Document(
-                        page_content=current_chunk_text,
-                        metadata=doc.metadata.copy()
-                    )
-                    if current_heading:
-                        new_doc.metadata['heading'] = current_heading
-                    new_docs.append(new_doc)
-                    
-                    # Handle overlap by including some sentences from previous chunk
-                    if chunk_overlap > 0 and len(current_chunk) > 1:
-                        # Find overlap sentences that don't exceed the overlap token count
-                        overlap_sentences = []
-                        overlap_token_count = 0
-                        
-                        for prev_sentence in reversed(current_chunk):
-                            prev_tokens = tokenizer.tokenize(prev_sentence)
-                            if overlap_token_count + len(prev_tokens) <= chunk_overlap:
-                                overlap_sentences.insert(0, prev_sentence)
-                                overlap_token_count += len(prev_tokens)
-                            else:
-                                break
-                        
-                        current_chunk = overlap_sentences + [sentence]
-                        current_token_count = overlap_token_count + sentence_token_count
-                        current_chunk_text = " ".join(current_chunk)
-                    else:
-                        current_chunk = [sentence]
-                        current_token_count = sentence_token_count
-                        current_chunk_text = sentence
-                else:
-                    current_chunk.append(sentence)
-                    current_token_count += sentence_token_count
-                    if current_chunk_text:
-                        current_chunk_text += " " + sentence
-                    else:
-                        current_chunk_text = sentence
-        
-        # Add the last chunk if it exists
-        if current_chunk:
-            new_doc = Document(
-                page_content=current_chunk_text,
-                metadata=doc.metadata.copy()
-            )
-            if current_heading:
-                new_doc.metadata['heading'] = current_heading
-            new_docs.append(new_doc)
-    
-    end_time = time.perf_counter()
-    logging.info(f"Improved chunking completed in {end_time - start_time:.2f} seconds. Created {len(new_docs)} chunks.")
-    
-    return new_docs
-
-def incremental_update(doc_folder: str, state_cache_path: str) -> List[Document]:
-    current_state = get_docs_folder_state(doc_folder)
-    if os.path.exists(state_cache_path):
-        with open(state_cache_path, "r") as f:
-            previous_state = json.load(f)
-    else:
-        previous_state = {}
-    new_files = [fname for fname, mtime in current_state.items()
-                 if fname not in previous_state or mtime > previous_state.get(fname, 0)]
-    logging.info(f"Found {len(new_files)} new/modified files.")
-    new_docs = []
-    pdf_cache = load_pdf_cache()
-    for filename in new_files:
-        full_path = os.path.join(doc_folder, filename)
-        docs_from_file = process_file(full_path, filename, pdf_cache)
-        new_docs.extend(docs_from_file)
-    if new_docs:
-        new_docs = improved_document_chunking(
-                        new_docs,
-                        target_chunk_size=512,
-                        chunk_overlap=50,
-                        respect_section_boundaries=True,
-                        preserve_metadata=True
-                    )
-
-    with open(state_cache_path, "w") as f:
-        json.dump(current_state, f)
-    save_pdf_cache(pdf_cache)
-    return new_docs
 
 # Function to convert custom Document to LangChain Document
 def convert_to_langchain_docs(docs):
@@ -462,17 +431,127 @@ def convert_to_langchain_docs(docs):
         ))
     return langchain_docs
 
+def save_markdown_to_disk(filepath, markdown_content, output_dir="./markdown_cache"):
+    """
+    Save extracted markdown content to disk for faster reuse.
+    
+    Args:
+        filepath: Original PDF file path
+        markdown_content: Extracted markdown content
+        output_dir: Directory to save markdown files
+    
+    Returns:
+        Path to the saved markdown file
+    """
+    import os
+    from pathlib import Path
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create a filename based on the original PDF name
+    pdf_filename = os.path.basename(filepath)
+    md_filename = os.path.splitext(pdf_filename)[0] + ".md"
+    output_path = os.path.join(output_dir, md_filename)
+    
+    # Write markdown content to file
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(markdown_content)
+    
+    logging.info(f"Saved markdown for {pdf_filename} to {output_path}")
+    return output_path
+
+def load_markdown_from_disk(filepath, markdown_dir="./markdown_cache"):
+    """
+    Load markdown content from disk if available.
+    
+    Args:
+        filepath: Original PDF file path
+        markdown_dir: Directory with cached markdown files
+    
+    Returns:
+        Markdown content if found, None otherwise
+    """
+    import os
+    from pathlib import Path
+    
+    # Create expected markdown filename
+    pdf_filename = os.path.basename(filepath)
+    md_filename = os.path.splitext(pdf_filename)[0] + ".md"
+    md_path = os.path.join(markdown_dir, md_filename)
+    
+    # Check if file exists
+    if os.path.exists(md_path):
+        try:
+            with open(md_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            logging.info(f"Loaded markdown from disk for {pdf_filename}")
+            return content
+        except Exception as e:
+            logging.error(f"Error loading markdown file {md_path}: {e}")
+    
+    return None
+
+def simple_split(documents: List[Document], target_chunk_size: int = 512) -> List[Document]:
+    start_time = time.perf_counter()
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt')
+    new_docs = []
+    header_regex = re.compile(r'^(?:[A-Z\s]{3,}|[A-Z][a-z]+(?:\s[A-Z][a-z]+)*)$')
+    for doc in documents:
+        sentences = nltk.sent_tokenize(doc.page_content)
+        current_chunk = []
+        current_token_count = 0
+        for sentence in sentences:
+            if header_regex.match(sentence.strip()):
+                if current_chunk:
+                    new_docs.append(Document(page_content=" ".join(current_chunk), metadata=doc.metadata.copy()))
+                    current_chunk = []
+                    current_token_count = 0
+            tokens = tokenizer.tokenize(sentence)
+            sentence_token_count = len(tokens)
+            if current_token_count + sentence_token_count > target_chunk_size and current_chunk:
+                new_docs.append(Document(page_content=" ".join(current_chunk), metadata=doc.metadata.copy()))
+                current_chunk = [sentence]
+                current_token_count = sentence_token_count
+            else:
+                current_chunk.append(sentence)
+                current_token_count += sentence_token_count
+        if current_chunk:
+            new_docs.append(Document(page_content=" ".join(current_chunk), metadata=doc.metadata.copy()))
+    end_time = time.perf_counter()
+    logging.info(f"Simple splitting took {end_time - start_time:.2f} seconds")
+    return new_docs
+
 def initialize_documents_and_vector_store(doc_folder: str = "./docs",
-                                          collection_name: str = "my_collection",
-                                          docs_cache_path: str = "docs_cache.joblib",
-                                          state_cache_path: str = "docs_state.json",
-                                          url: str = "http://localhost:6333"):
+                                         collection_name: str = "my_collection",
+                                         docs_cache_path: str = "docs_cache.joblib",
+                                         state_cache_path: str = "docs_state.json",
+                                         url: str = "http://localhost:6333",
+                                         use_semantic_chunking: bool = True):  # New parameter
+    """
+    Initialize or update document store with optimized batching and vector operations.
+    
+    Args:
+        doc_folder: Folder containing documents to process
+        collection_name: Name of Qdrant collection to use
+        docs_cache_path: Path to cache processed documents
+        state_cache_path: Path to cache document folder state
+        url: URL of Qdrant server
+        use_semantic_chunking: Whether to use semantic chunking (True) or structural chunking (False)
+    """
     init_start = time.perf_counter()
+    
+    # Larger batch size for faster vector insertion
+    VECTOR_BATCH_SIZE = 250
     
     # 1. Initialize the dense embedding model with OS-specific device settings
     dense_embeddings = SentenceTransformerEmbeddings(
         model_name="BAAI/bge-large-en-v1.5",
-        model_kwargs={"trust_remote_code": True, "device": device}
+        model_kwargs={"trust_remote_code": True, "device": device},
+        encode_kwargs={'normalize_embeddings':True }
     )
     
     # 2. Initialize the sparse embedding model
@@ -513,7 +592,8 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
                 sparse_embedding=sparse_embeddings,
                 collection_name=collection_name,
                 url=url,
-                retrieval_mode=RetrievalMode.HYBRID
+                retrieval_mode=RetrievalMode.HYBRID,
+                # batch_size=VECTOR_BATCH_SIZE
             )
             logging.info("Successfully loaded Qdrant collection with hybrid search support.")
         except Exception as e:
@@ -534,14 +614,21 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
                 logging.info(f"Loaded {len(documents)} documents.")
                 metadata_docs = create_documents_from_data(degree_programs_data)
                 documents.extend(metadata_docs)
-                docs = improved_document_chunking(
-                            documents,
-                            target_chunk_size=512,
-                            chunk_overlap=50,
-                            respect_section_boundaries=True,
-                            preserve_metadata=True
-                        )
-                logging.info(f"Created {len(docs)} document chunks after splitting.")
+                
+                # Choose chunking method based on parameter
+                if use_semantic_chunking:
+                    docs = simple_split(
+                        documents,
+                        target_chunk_size=512
+                    )
+                    logging.info(f"Created {len(docs)} document chunks using semantic chunking.")
+                else:
+                    docs = simple_split(
+                        documents,
+                        target_chunk_size=512
+                    )
+                    logging.info(f"Created {len(docs)} document chunks using structural chunking.")
+                    
                 joblib.dump(docs, docs_cache_path)
     
     # If collection doesn't exist, needs to be recreated for hybrid search, or documents have changed
@@ -551,19 +638,25 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
         logging.info(f"Loaded {len(documents)} documents.")
         metadata_docs = create_documents_from_data(degree_programs_data)
         documents.extend(metadata_docs)
-        docs = improved_document_chunking(
-                    documents,
-                    target_chunk_size=512,
-                    chunk_overlap=50,
-                    respect_section_boundaries=True,
-                    preserve_metadata=True
-                )
-        logging.info(f"Created {len(docs)} document chunks after splitting.")
+        
+        # Choose chunking method based on parameter
+        if use_semantic_chunking:
+            docs = simple_split(
+                documents,
+                target_chunk_size=512
+            )
+            logging.info(f"Created {len(docs)} document chunks using semantic chunking.")
+        else:
+            docs = simple_split(
+                documents,
+                target_chunk_size=512
+            )
+            logging.info(f"Created {len(docs)} document chunks using structural chunking.")
         
         # Convert to LangChain documents format
         langchain_docs = convert_to_langchain_docs(docs)
         
-        logging.info("Building new vector store using QdrantVectorStore with hybrid search capability...")
+        logging.info(f"Building new vector store using QdrantVectorStore with hybrid search capability and batch size {VECTOR_BATCH_SIZE}...")
         vector_store = QdrantVectorStore.from_documents(
             langchain_docs,
             embedding=dense_embeddings,
@@ -571,7 +664,8 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
             url=url,
             collection_name=collection_name,
             force_recreate=True,
-            retrieval_mode=RetrievalMode.HYBRID
+            retrieval_mode=RetrievalMode.HYBRID,
+            batch_size=VECTOR_BATCH_SIZE
         )
         joblib.dump(docs, docs_cache_path)
     
@@ -593,23 +687,17 @@ def load_existing_qdrant_store(
 ):
     """
     Loads the existing Qdrant vector store and cached documents.
-    If the collection doesn't support hybrid search, it will recreate it if force_recreate is True.
-    
-    Args:
-        collection_name: Name of the Qdrant collection
-        docs_cache_path: Path to the cached documents
-        qdrant_url: URL of the Qdrant server
-        force_recreate: Whether to recreate the collection if it doesn't support hybrid search
-        
-    Returns:
-        Tuple of (docs, vector_store, dense_embeddings, sparse_embeddings)
     """
     logging.info(f"Attempting to load Qdrant collection '{collection_name}'...")
+    
+    # Set batch size for operations (only used for from_documents)
+    VECTOR_BATCH_SIZE = 250
     
     # Initialize embeddings
     dense_embeddings = SentenceTransformerEmbeddings(
         model_name="BAAI/bge-large-en-v1.5",
-        model_kwargs={"trust_remote_code": True, "device": device}
+        model_kwargs={"trust_remote_code": True, "device": device},
+        encode_kwargs={'normalize_embeddings':True }
     )
     
     # Initialize sparse embeddings
@@ -624,6 +712,7 @@ def load_existing_qdrant_store(
     
     # Check if the collection exists and supports hybrid search
     try:
+        # Removed batch_size parameter
         vector_store = QdrantVectorStore.from_existing_collection(
             embedding=dense_embeddings,
             sparse_embedding=sparse_embeddings,
@@ -655,7 +744,8 @@ def load_existing_qdrant_store(
                 url=qdrant_url,
                 collection_name=collection_name,
                 force_recreate=True,
-                retrieval_mode=RetrievalMode.HYBRID
+                retrieval_mode=RetrievalMode.HYBRID,
+                batch_size=VECTOR_BATCH_SIZE  # This is ok for from_documents
             )
             logging.info(f"Successfully recreated collection '{collection_name}' with hybrid search support.")
             return docs, vector_store, dense_embeddings, sparse_embeddings
@@ -663,61 +753,6 @@ def load_existing_qdrant_store(
             # If force_recreate is False or it's a different error, just raise it
             logging.error(f"Error loading Qdrant collection: {error_message}")
             raise
-# Function to perform hybrid search
-def hybrid_search(query: str, vector_store, top_k: int = 4):
-    """
-    Perform hybrid search (combining dense and sparse vectors) using QdrantVectorStore.
-    
-    Args:
-        query: The search query string
-        vector_store: The initialized QdrantVectorStore with hybrid capability
-        top_k: Number of results to return
-        
-    Returns:
-        List of retrieved documents
-    """
-    # Make sure the vector store is using hybrid search mode
-    if hasattr(vector_store, 'retrieval_mode'):
-        vector_store.retrieval_mode = RetrievalMode.HYBRID
-    
-    # Create a retriever with the specified k
-    retriever = vector_store.as_retriever(search_kwargs={"k": top_k})
-    
-    # Get relevant documents
-    results = retriever.get_relevant_documents(query)
-    return results
-
-# Function to compare different search modes
-def test_search_modes(query: str, vector_store, top_k: int = 4):
-    """
-    Test different search modes (dense, sparse, hybrid) and compare results.
-    
-    Args:
-        query: The search query string
-        vector_store: The initialized QdrantVectorStore
-        top_k: Number of results to return
-        
-    Returns:
-        Dict containing results from each search mode
-    """
-    results = {}
-    
-    # Test dense search
-    vector_store.retrieval_mode = RetrievalMode.DENSE
-    dense_retriever = vector_store.as_retriever(search_kwargs={"k": top_k})
-    results['dense'] = dense_retriever.get_relevant_documents(query)
-    
-    # Test sparse search
-    vector_store.retrieval_mode = RetrievalMode.SPARSE
-    sparse_retriever = vector_store.as_retriever(search_kwargs={"k": top_k})
-    results['sparse'] = sparse_retriever.get_relevant_documents(query)
-    
-    # Test hybrid search
-    vector_store.retrieval_mode = RetrievalMode.HYBRID
-    hybrid_retriever = vector_store.as_retriever(search_kwargs={"k": top_k})
-    results['hybrid'] = hybrid_retriever.get_relevant_documents(query)
-    
-    return results
 
 if __name__ == "__main__":
     # Install required dependencies if not already installed
@@ -733,32 +768,8 @@ if __name__ == "__main__":
     docs, vector_store, dense_embeddings, sparse_embeddings = initialize_documents_and_vector_store(
         doc_folder=DOC_FOLDER,
         collection_name=PERSIST_COLLECTION,
-        url=QDRANT_URL
+        url=QDRANT_URL,
+        use_semantic_chunking=True
     )
-    
-    # # Example search query
-    # query = "computer science curriculum"
-    
-    # # Test different search modes
-    # print("\n=== Testing Different Search Modes ===")
-    # search_results = test_search_modes(query, vector_store)
-    
-    # # Print results from each mode
-    # for mode, results in search_results.items():
-    #     print(f"\n--- {mode.upper()} SEARCH RESULTS ---")
-    #     for i, doc in enumerate(results):
-    #         print(f"Result {i+1}:")
-    #         print(f"Content: {doc.page_content[:150]}...")
-    #         print(f"Metadata: {doc.metadata}")
-    #         print("-" * 50)
-    
-    # # Print hybrid search results
-    # print("\n=== Hybrid Search Results ===")
-    # hybrid_results = hybrid_search(query, vector_store, top_k=5)
-    # for i, doc in enumerate(hybrid_results):
-    #     print(f"Result {i+1}:")
-    #     print(f"Content: {doc.page_content[:150]}...")
-    #     print(f"Metadata: {doc.metadata}")
-    #     print("-" * 50)
-    
+
     print("\nIngestion and search testing completed successfully.")

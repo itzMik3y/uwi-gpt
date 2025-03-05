@@ -84,7 +84,13 @@ credit_prompt = PromptTemplate(
 class OllamaLLM(LLM):
     model_name: str = "llama3:8b"
     temperature: float = 0.0
-    _chat_history: ClassVar[List[dict]] = []
+    # Make _chat_history a regular instance variable instead of a ClassVar
+    
+    def __init__(self, model_name: str = "llama3:8b", temperature: float = 0.0):
+        super().__init__()
+        self.model_name = model_name
+        self.temperature = temperature
+        self._chat_history = []  # Initialize as an instance variable
     
     @property
     def _llm_type(self) -> str:
@@ -319,7 +325,7 @@ async def startup_event():
 
     # Ensemble retriever that combines multiple retrievers with different weights
     ensemble_ret = EnsembleRetriever(
-        retrievers=[hybrid_ret, semantic_retriever, bm25_retriever],
+        retrievers=[hybrid_ret,semantic_retriever, bm25_retriever],
         weights=[1.2, 1.0, 0.9],  # Give higher weight to hybrid retriever
         threshold=0.1
     )
@@ -340,6 +346,7 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     processing_time: float
+    context: str
 
 @app.post("/query", response_model=QueryResponse)
 async def query_endpoint(request: QueryRequest):
@@ -366,7 +373,7 @@ async def query_endpoint(request: QueryRequest):
         reranked_docs = rerank_with_crossencoder(user_query, initial_docs)
 
         # 5. Choose prompt and format
-        combined_context = "\n".join([doc.page_content for doc in reranked_docs[:10]])
+        combined_context = "\n".join([doc.page_content for doc in reranked_docs[:25]])
         if any(keyword in user_query.lower() for keyword in ["credit", "graduate", "bsc", "degree", "study"]):
             chosen_prompt = credit_prompt
             logging.info("Using custom credit prompt.")
@@ -380,7 +387,7 @@ async def query_endpoint(request: QueryRequest):
         answer = llm._call(prompt_str)
         processing_time = time.perf_counter() - start_time
 
-        return QueryResponse(answer=answer, processing_time=processing_time)
+        return QueryResponse(answer=answer, processing_time=processing_time, context=combined_context)
     except Exception as e:
         logging.error(f"Error processing query: {e}")
         raise HTTPException(status_code=500, detail=str(e))
