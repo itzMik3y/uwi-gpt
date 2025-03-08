@@ -10,6 +10,7 @@ import json
 
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, PrivateAttr
 from pathlib import Path
 import nltk
@@ -217,6 +218,18 @@ def filter_documents_by_metadata(docs: list, query: str) -> list:
 # FastAPI App
 # --------------------------------------------------------------------------
 app = FastAPI(title="Document QA API")
+
+#quick way to get rid of CORS issues
+origins = [
+    "http://localhost:3000",]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,  
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],  
+)
 
 docs = None
 vector_store = None
