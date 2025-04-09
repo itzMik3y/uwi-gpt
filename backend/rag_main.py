@@ -699,6 +699,7 @@ def main():
     logging.info(answer)
 
     # 10. Total Execution Time
+    
     overall_end = time.perf_counter()
     logging.info(f"Total script execution took {overall_end - overall_start:.2f} seconds")
 

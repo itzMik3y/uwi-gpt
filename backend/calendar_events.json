@@ -1,0 +1,90 @@
+[
+  {
+    "error": false,
+    "data": {
+      "events": [
+        {
+          "id": 86795,
+          "name": "Course quiz - personal assessment closes",
+          "description": "<div class=\"no-overflow\"><p dir=\"ltr\" style=\"text-align:left;\"></p><ul><li>The quiz is geared towards providing you with an opportunity to gauge your recollection of the course's material.</li><li>The quiz contains a mix of multiple choice, true/false, and matching questions.</li><li>There is a total of 20 questions.</li><li>The total mark you can obtain for the quiz is 40.</li><li>The quiz is worth 10% of your final coursework grade.</li><li>You will have 15 minutes to complete the quiz.</li><li>You will have only 1 attempt at the quiz.</li><li>You may reference the slides from our discussions.\u00a0</li></ul><p></p></div>",
+          "descriptionformat": 1,
+          "location": "",
+          "categoryid": null,
+          "groupid": null,
+          "userid": 1895,
+          "repeatid": null,
+          "eventcount": null,
+          "component": "mod_quiz",
+          "modulename": "quiz",
+          "activityname": "Course quiz - personal assessment",
+          "activitystr": "Quiz closes",
+          "instance": 388676,
+          "eventtype": "close",
+          "timestart": 1744261140,
+          "timeduration": 0,
+          "timesort": 1744261140,
+          "timeusermidnight": 1744174800,
+          "visible": 1,
+          "timemodified": 1744146545,
+          "overdue": false,
+          "icon": {
+            "key": "monologo",
+            "component": "quiz",
+            "alttext": "Close window",
+            "iconurl": "https://vle.mona.uwi.edu/theme/image.php/boost/quiz/1742798393/monologo?filtericon=1",
+            "iconclass": ""
+          },
+          "course": {
+            "id": 10865,
+            "fullname": "Security Analysis and Digital Forensics",
+            "shortname": "INFO3165 | S2_2024/25",
+            "idnumber": "INFO31650.202420",
+            "summary": "",
+            "summaryformat": 1,
+            "startdate": 1713070800,
+            "enddate": 1768062540,
+            "visible": true,
+            "showactivitydates": true,
+            "showcompletionconditions": true,
+            "fullnamedisplay": "INFO3165 | S2_2024/25 Security Analysis and Digital Forensics",
+            "viewurl": "https://vle.mona.uwi.edu/course/view.php?id=10865",
+            "courseimage": "data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIj8+PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI1NjUiIGhlaWdodD0iNTY1Ij48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJyZ2IoOSwgMTMyLCAyMjcpIiAvPjxjaXJjbGUgY3g9IjAiIGN5PSIwIiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiNkZGQiIHN0eWxlPSJvcGFjaXR5OjAuMTQxMzMzMzMzMzMzMzM7IiAvPjxjaXJjbGUgY3g9IjU2NSIgY3k9IjAiIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iI2RkZCIgc3R5bGU9Im9wYWNpdHk6MC4xNDEzMzMzMzMzMzMzMzsiIC8+PGNpcmNsZSBjeD0iMCIgY3k9IjU2NSIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjZGRkIiBzdHlsZT0ib3BhY2l0eTowLjE0MTMzMzMzMzMzMzMzOyIgLz48Y2lyY2xlIGN4PSI1NjUiIGN5PSI1NjUiIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iI2RkZCIgc3R5bGU9Im9wYWNpdHk6MC4xNDEzMzMzMzMzMzMzMzsiIC8+PGNpcmNsZSBjeD0iOTQuMTY2NjY2NjY2NjY3IiBjeT0iMCIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjMjIyIiBzdHlsZT0ib3BhY2l0eTowLjE1OyIgLz48Y2lyY2xlIGN4PSI5NC4xNjY2NjY2NjY2NjciIGN5PSI1NjUiIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iIzIyMiIgc3R5bGU9Im9wYWNpdHk6MC4xNTsiIC8+PGNpcmNsZSBjeD0iMTg4LjMzMzMzMzMzMzMzIiBjeT0iMCIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjZGRkIiBzdHlsZT0ib3BhY2l0eTowLjAyOyIgLz48Y2lyY2xlIGN4PSIxODguMzMzMzMzMzMzMzMiIGN5PSI1NjUiIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iI2RkZCIgc3R5bGU9Im9wYWNpdHk6MC4wMjsiIC8+PGNpcmNsZSBjeD0iMjgyLjUiIGN5PSIwIiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiMyMjIiIHN0eWxlPSJvcGFjaXR5OjAuMDk4OyIgLz48Y2lyY2xlIGN4PSIyODIuNSIgY3k9IjU2NSIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjMjIyIiBzdHlsZT0ib3BhY2l0eTowLjA5ODsiIC8+PGNpcmNsZSBjeD0iMzc2LjY2NjY2NjY2NjY3IiBjeT0iMCIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjZGRkIiBzdHlsZT0ib3BhY2l0eTowLjA3MjsiIC8+PGNpcmNsZSBjeD0iMzc2LjY2NjY2NjY2NjY3IiBjeT0iNTY1IiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiNkZGQiIHN0eWxlPSJvcGFjaXR5OjAuMDcyOyIgLz48Y2lyY2xlIGN4PSI0NzAuODMzMzMzMzMzMzMiIGN5PSIwIiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiMyMjIiIHN0eWxlPSJvcGFjaXR5OjAuMDgwNjY2NjY2NjY2NjY3OyIgLz48Y2lyY2xlIGN4PSI0NzAuODMzMzMzMzMzMzMiIGN5PSI1NjUiIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iIzIyMiIgc3R5bGU9Im9wYWNpdHk6MC4wODA2NjY2NjY2NjY2Njc7IiAvPjxjaXJjbGUgY3g9IjAiIGN5PSI5NC4xNjY2NjY2NjY2NjciIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iI2RkZCIgc3R5bGU9Im9wYWNpdHk6MC4wMjsiIC8+PGNpcmNsZSBjeD0iNTY1IiBjeT0iOTQuMTY2NjY2NjY2NjY3IiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiNkZGQiIHN0eWxlPSJvcGFjaXR5OjAuMDI7IiAvPjxjaXJjbGUgY3g9Ijk0LjE2NjY2NjY2NjY2NyIgY3k9Ijk0LjE2NjY2NjY2NjY2NyIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjMjIyIiBzdHlsZT0ib3BhY2l0eTowLjAyODY2NjY2NjY2NjY2NzsiIC8+PGNpcmNsZSBjeD0iMTg4LjMzMzMzMzMzMzMzIiBjeT0iOTQuMTY2NjY2NjY2NjY3IiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiNkZGQiIHN0eWxlPSJvcGFjaXR5OjAuMDg5MzMzMzMzMzMzMzMzOyIgLz48Y2lyY2xlIGN4PSIyODIuNSIgY3k9Ijk0LjE2NjY2NjY2NjY2NyIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjMjIyIiBzdHlsZT0ib3BhY2l0eTowLjAyODY2NjY2NjY2NjY2NzsiIC8+PGNpcmNsZSBjeD0iMzc2LjY2NjY2NjY2NjY3IiBjeT0iOTQuMTY2NjY2NjY2NjY3IiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiNkZGQiIHN0eWxlPSJvcGFjaXR5OjAuMTA2NjY2NjY2NjY2Njc7IiAvPjxjaXJjbGUgY3g9IjQ3MC44MzMzMzMzMzMzMyIgY3k9Ijk0LjE2NjY2NjY2NjY2NyIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjMjIyIiBzdHlsZT0ib3BhY2l0eTowLjA4MDY2NjY2NjY2NjY2NzsiIC8+PGNpcmNsZSBjeD0iMCIgY3k9IjE4OC4zMzMzMzMzMzMzMyIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjMjIyIiBzdHlsZT0ib3BhY2l0eTowLjA2MzMzMzMzMzMzMzMzMzsiIC8+PGNpcmNsZSBjeD0iNTY1IiBjeT0iMTg4LjMzMzMzMzMzMzMzIiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiMyMjIiIHN0eWxlPSJvcGFjaXR5OjAuMDYzMzMzMzMzMzMzMzMzOyIgLz48Y2lyY2xlIGN4PSI5NC4xNjY2NjY2NjY2NjciIGN5PSIxODguMzMzMzMzMzMzMzMiIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iI2RkZCIgc3R5bGU9Im9wYWNpdHk6MC4xNDEzMzMzMzMzMzMzMzsiIC8+PGNpcmNsZSBjeD0iMTg4LjMzMzMzMzMzMzMzIiBjeT0iMTg4LjMzMzMzMzMzMzMzIiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiMyMjIiIHN0eWxlPSJvcGFjaXR5OjAuMTU7IiAvPjxjaXJjbGUgY3g9IjI4Mi41IiBjeT0iMTg4LjMzMzMzMzMzMzMzIiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiMyMjIiIHN0eWxlPSJvcGFjaXR5OjAuMTU7IiAvPjxjaXJjbGUgY3g9IjM3Ni42NjY2NjY2NjY2NyIgY3k9IjE4OC4zMzMzMzMzMzMzMyIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjMjIyIiBzdHlsZT0ib3BhY2l0eTowLjA4MDY2NjY2NjY2NjY2NzsiIC8+PGNpcmNsZSBjeD0iNDcwLjgzMzMzMzMzMzMzIiBjeT0iMTg4LjMzMzMzMzMzMzMzIiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiMyMjIiIHN0eWxlPSJvcGFjaXR5OjAuMDgwNjY2NjY2NjY2NjY3OyIgLz48Y2lyY2xlIGN4PSIwIiBjeT0iMjgyLjUiIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iIzIyMiIgc3R5bGU9Im9wYWNpdHk6MC4wMjg2NjY2NjY2NjY2Njc7IiAvPjxjaXJjbGUgY3g9IjU2NSIgY3k9IjI4Mi41IiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiMyMjIiIHN0eWxlPSJvcGFjaXR5OjAuMDI4NjY2NjY2NjY2NjY3OyIgLz48Y2lyY2xlIGN4PSI5NC4xNjY2NjY2NjY2NjciIGN5PSIyODIuNSIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjMjIyIiBzdHlsZT0ib3BhY2l0eTowLjExNTMzMzMzMzMzMzMzOyIgLz48Y2lyY2xlIGN4PSIxODguMzMzMzMzMzMzMzMiIGN5PSIyODIuNSIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjMjIyIiBzdHlsZT0ib3BhY2l0eTowLjAyODY2NjY2NjY2NjY2NzsiIC8+PGNpcmNsZSBjeD0iMjgyLjUiIGN5PSIyODIuNSIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjMjIyIiBzdHlsZT0ib3BhY2l0eTowLjExNTMzMzMzMzMzMzMzOyIgLz48Y2lyY2xlIGN4PSIzNzYuNjY2NjY2NjY2NjciIGN5PSIyODIuNSIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjZGRkIiBzdHlsZT0ib3BhY2l0eTowLjA1NDY2NjY2NjY2NjY2NzsiIC8+PGNpcmNsZSBjeD0iNDcwLjgzMzMzMzMzMzMzIiBjeT0iMjgyLjUiIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iI2RkZCIgc3R5bGU9Im9wYWNpdHk6MC4wNTQ2NjY2NjY2NjY2Njc7IiAvPjxjaXJjbGUgY3g9IjAiIGN5PSIzNzYuNjY2NjY2NjY2NjciIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iI2RkZCIgc3R5bGU9Im9wYWNpdHk6MC4wMjsiIC8+PGNpcmNsZSBjeD0iNTY1IiBjeT0iMzc2LjY2NjY2NjY2NjY3IiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiNkZGQiIHN0eWxlPSJvcGFjaXR5OjAuMDI7IiAvPjxjaXJjbGUgY3g9Ijk0LjE2NjY2NjY2NjY2NyIgY3k9IjM3Ni42NjY2NjY2NjY2NyIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjZGRkIiBzdHlsZT0ib3BhY2l0eTowLjE0MTMzMzMzMzMzMzMzOyIgLz48Y2lyY2xlIGN4PSIxODguMzMzMzMzMzMzMzMiIGN5PSIzNzYuNjY2NjY2NjY2NjciIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iIzIyMiIgc3R5bGU9Im9wYWNpdHk6MC4wOTg7IiAvPjxjaXJjbGUgY3g9IjI4Mi41IiBjeT0iMzc2LjY2NjY2NjY2NjY3IiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiMyMjIiIHN0eWxlPSJvcGFjaXR5OjAuMDI4NjY2NjY2NjY2NjY3OyIgLz48Y2lyY2xlIGN4PSIzNzYuNjY2NjY2NjY2NjciIGN5PSIzNzYuNjY2NjY2NjY2NjciIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iIzIyMiIgc3R5bGU9Im9wYWNpdHk6MC4wODA2NjY2NjY2NjY2Njc7IiAvPjxjaXJjbGUgY3g9IjQ3MC44MzMzMzMzMzMzMyIgY3k9IjM3Ni42NjY2NjY2NjY2NyIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjMjIyIiBzdHlsZT0ib3BhY2l0eTowLjA2MzMzMzMzMzMzMzMzMzsiIC8+PGNpcmNsZSBjeD0iMCIgY3k9IjQ3MC44MzMzMzMzMzMzMyIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjMjIyIiBzdHlsZT0ib3BhY2l0eTowLjA4MDY2NjY2NjY2NjY2NzsiIC8+PGNpcmNsZSBjeD0iNTY1IiBjeT0iNDcwLjgzMzMzMzMzMzMzIiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiMyMjIiIHN0eWxlPSJvcGFjaXR5OjAuMDgwNjY2NjY2NjY2NjY3OyIgLz48Y2lyY2xlIGN4PSI5NC4xNjY2NjY2NjY2NjciIGN5PSI0NzAuODMzMzMzMzMzMzMiIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iI2RkZCIgc3R5bGU9Im9wYWNpdHk6MC4xMDY2NjY2NjY2NjY2NzsiIC8+PGNpcmNsZSBjeD0iMTg4LjMzMzMzMzMzMzMzIiBjeT0iNDcwLjgzMzMzMzMzMzMzIiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiMyMjIiIHN0eWxlPSJvcGFjaXR5OjAuMDQ2OyIgLz48Y2lyY2xlIGN4PSIyODIuNSIgY3k9IjQ3MC44MzMzMzMzMzMzMyIgcj0iOTQuMTY2NjY2NjY2NjY3IiBmaWxsPSIjMjIyIiBzdHlsZT0ib3BhY2l0eTowLjA0NjsiIC8+PGNpcmNsZSBjeD0iMzc2LjY2NjY2NjY2NjY3IiBjeT0iNDcwLjgzMzMzMzMzMzMzIiByPSI5NC4xNjY2NjY2NjY2NjciIGZpbGw9IiMyMjIiIHN0eWxlPSJvcGFjaXR5OjAuMDQ2OyIgLz48Y2lyY2xlIGN4PSI0NzAuODMzMzMzMzMzMzMiIGN5PSI0NzAuODMzMzMzMzMzMzMiIHI9Ijk0LjE2NjY2NjY2NjY2NyIgZmlsbD0iIzIyMiIgc3R5bGU9Im9wYWNpdHk6MC4xMTUzMzMzMzMzMzMzMzsiIC8+PC9zdmc+",
+            "progress": 9,
+            "hasprogress": true,
+            "isfavourite": false,
+            "hidden": false,
+            "showshortname": true,
+            "coursecategory": "COMP Undergraduate Courses"
+          },
+          "subscription": {
+            "displayeventsource": false
+          },
+          "canedit": false,
+          "candelete": false,
+          "deleteurl": "https://vle.mona.uwi.edu/calendar/delete.php?id=86795&course=10865",
+          "editurl": "https://vle.mona.uwi.edu/course/mod.php?update=388676&return=1&sesskey=ShLSbxct74",
+          "viewurl": "https://vle.mona.uwi.edu/calendar/view.php?view=day&course=10865&time=1744261140#event_86795",
+          "formattedtime": "<a href=\"https://vle.mona.uwi.edu/calendar/view.php?view=day&amp;time=1744261140\">Wednesday, 9 April</a>, 11:59 PM",
+          "formattedlocation": "",
+          "isactionevent": true,
+          "iscourseevent": false,
+          "iscategoryevent": false,
+          "groupname": null,
+          "normalisedeventtype": "course",
+          "normalisedeventtypetext": "Course event",
+          "action": {
+            "name": "Attempt quiz now",
+            "url": "https://vle.mona.uwi.edu/mod/quiz/view.php?id=388676",
+            "itemcount": 1,
+            "actionable": false,
+            "showitemcount": false
+          },
+          "purpose": "assessment",
+          "url": "https://vle.mona.uwi.edu/mod/quiz/view.php?id=388676"
+        }
+      ],
+      "firstid": 86795,
+      "lastid": 86795
+    }
+  }
+]

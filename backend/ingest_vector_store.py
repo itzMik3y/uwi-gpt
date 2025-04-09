@@ -1,6 +1,6 @@
 # ingest_vector_store.py
 import logging 
-from ingestion import initialize_documents_and_vector_store
+from backend.ingestion import initialize_documents_and_vector_store
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

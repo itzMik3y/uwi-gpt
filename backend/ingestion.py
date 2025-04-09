@@ -492,55 +492,310 @@ def load_markdown_from_disk(filepath, markdown_dir="./markdown_cache"):
     
     return None
 
-def simple_split(documents: List[Document], target_chunk_size: int = 512) -> List[Document]:
-    start_time = time.perf_counter()
-    try:
-        nltk.data.find('tokenizers/punkt')
-    except LookupError:
-        nltk.download('punkt')
-    new_docs = []
-    header_regex = re.compile(r'^(?:[A-Z\s]{3,}|[A-Z][a-z]+(?:\s[A-Z][a-z]+)*)$')
-    for doc in documents:
-        sentences = nltk.sent_tokenize(doc.page_content)
-        current_chunk = []
-        current_token_count = 0
-        for sentence in sentences:
-            if header_regex.match(sentence.strip()):
-                if current_chunk:
-                    new_docs.append(Document(page_content=" ".join(current_chunk), metadata=doc.metadata.copy()))
-                    current_chunk = []
-                    current_token_count = 0
-            tokens = tokenizer.tokenize(sentence)
-            sentence_token_count = len(tokens)
-            if current_token_count + sentence_token_count > target_chunk_size and current_chunk:
-                new_docs.append(Document(page_content=" ".join(current_chunk), metadata=doc.metadata.copy()))
-                current_chunk = [sentence]
-                current_token_count = sentence_token_count
+def improved_document_chunker(documents, min_chunk_size=300, chunk_size=1500, chunk_overlap=150):
+    """
+    An improved document chunker that prevents single-sentence chunks
+    and ensures meaningful content in each chunk.
+    
+    Args:
+        documents: List of Document objects to split
+        min_chunk_size: Minimum size for a chunk to be considered valid (characters)
+        chunk_size: Target maximum size of each chunk in characters
+        chunk_overlap: Number of characters to overlap between chunks
+        
+    Returns:
+        List of chunked Document objects with preserved metadata
+    """
+    import re
+    import logging
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from document import Document
+    
+    logging.info(f"Starting improved document chunking for {len(documents)} documents")
+    
+    # Define meaningful section separators in order of priority
+    separators = [
+        # Primary section breaks - only use these for initial splitting
+        "\n# ", "\n## ",     # Major headers (h1, h2)
+        "\n\n\n",            # Triple line break (major section)
+        "\n---\n", "\n***\n", # Horizontal rules (major section dividers)
+        
+        # Secondary breaks - use these if chunks are still too large
+        "\n### ", "\n#### ", # Minor headers (h3, h4)
+        "\n\n",              # Double line break (paragraph)
+        
+        # Last resort separators - only if chunks are very large
+        "\n", ". ", "! ", "? " # Line breaks and sentence boundaries
+    ]
+    
+    # Initialize the splitter with our major separators
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=separators,
+        keep_separator=True
+    )
+    
+    # Function to merge small chunks with adjacent chunks
+    def merge_small_chunks(chunks, texts, metadatas):
+        if not chunks:
+            return [], []
+            
+        merged_texts = []
+        merged_metadatas = []
+        
+        i = 0
+        while i < len(chunks):
+            current_chunk = chunks[i]
+            current_text = texts[i]
+            current_metadata = metadatas[i].copy()
+            
+            # Check if this chunk is too small and not the last one
+            if len(current_text) < min_chunk_size and i < len(chunks) - 1:
+                # Merge with the next chunk
+                next_text = texts[i + 1]
+                next_metadata = metadatas[i + 1]
+                
+                # Update chunk counts and indices
+                total_chunks = current_metadata.get("chunk_count", 1)
+                
+                # Create combined metadata
+                combined_metadata = current_metadata.copy()
+                if "chunk_title" in next_metadata and "chunk_title" not in combined_metadata:
+                    combined_metadata["chunk_title"] = next_metadata["chunk_title"]
+                
+                # If both chunks have titles, append them
+                if "chunk_title" in current_metadata and "chunk_title" in next_metadata:
+                    combined_metadata["chunk_title"] = f"{current_metadata['chunk_title']} + {next_metadata['chunk_title']}"
+                
+                # Add the merged chunk
+                merged_texts.append(current_text + "\n\n" + next_text)
+                merged_metadatas.append(combined_metadata)
+                
+                # Skip the next chunk since we merged it
+                i += 2
             else:
-                current_chunk.append(sentence)
-                current_token_count += sentence_token_count
-        if current_chunk:
-            new_docs.append(Document(page_content=" ".join(current_chunk), metadata=doc.metadata.copy()))
-    end_time = time.perf_counter()
-    logging.info(f"Simple splitting took {end_time - start_time:.2f} seconds")
-    return new_docs
+                # Add the current chunk as is
+                merged_texts.append(current_text)
+                merged_metadatas.append(current_metadata)
+                i += 1
+                
+        return merged_texts, merged_metadatas
+    
+    result_chunks = []
+    
+    for doc in documents:
+        if not doc.page_content or not doc.page_content.strip():
+            logging.warning(f"Skipping empty document: {doc.metadata.get('source_file', 'unknown')}")
+            continue
+            
+        # Preserve and enrich metadata 
+        doc_metadata = doc.metadata.copy()
+        
+        # Extract document title/heading if available
+        content_lines = doc.page_content.strip().split('\n')
+        doc_title = None
+        
+        # Try to find a title (first markdown header or first line)
+        for line in content_lines[:5]:  # Check first few lines
+            if re.match(r'^#{1,6}\s+(.+)$', line):
+                doc_title = re.match(r'^#{1,6}\s+(.+)$', line).group(1)
+                break
+        
+        # If no markdown header found, use first line as title
+        if not doc_title and content_lines:
+            doc_title = content_lines[0].strip()
+            # Limit length for titles extracted from first line
+            if len(doc_title) > 80:
+                doc_title = doc_title[:77] + "..."
+                
+        # Add title to metadata
+        if doc_title:
+            doc_metadata["title"] = doc_title
+        
+        # Split the document content
+        chunks = text_splitter.split_text(doc.page_content)
+        
+        # Prepare metadata for each chunk
+        chunk_metadatas = []
+        for i in range(len(chunks)):
+            # Create new metadata for this chunk
+            chunk_metadata = doc_metadata.copy()
+            
+            # Add chunk position info
+            chunk_metadata["chunk_index"] = i
+            chunk_metadata["chunk_count"] = len(chunks)
+            
+            # Extract chunk title/heading if present
+            chunk_lines = chunks[i].strip().split('\n')
+            chunk_title = None
+            
+            for line in chunk_lines[:3]:  # Check first few lines
+                if re.match(r'^#{1,6}\s+(.+)$', line):
+                    chunk_title = re.match(r'^#{1,6}\s+(.+)$', line).group(1)
+                    break
+            
+            if chunk_title:
+                chunk_metadata["chunk_title"] = chunk_title
+                
+            chunk_metadatas.append(chunk_metadata)
+        
+        # Merge small chunks with adjacent ones
+        merged_texts, merged_metadatas = merge_small_chunks(chunks, chunks, chunk_metadatas)
+        
+        # Create final document chunks
+        for i, (text, metadata) in enumerate(zip(merged_texts, merged_metadatas)):
+            # Update chunk indices after merging
+            metadata["chunk_index"] = i
+            metadata["chunk_count"] = len(merged_texts)
+            
+            # Create document from chunk with minimum size checking
+            if len(text.strip()) >= min_chunk_size or i == 0:
+                result_chunks.append(Document(
+                    page_content=text.strip(),
+                    metadata=metadata
+                ))
+            else:
+                # Log that we're skipping a small chunk
+                logging.info(f"Skipping small chunk of size {len(text)} characters from {metadata.get('source_file', 'unknown')}")
+    
+    logging.info(f"Chunking completed: generated {len(result_chunks)} chunks from {len(documents)} documents")
+    return result_chunks
 
+def load_existing_qdrant_store(
+    collection_name: str = "my_collection",
+    docs_cache_path: str = "docs_cache.joblib",
+    qdrant_url: str = "http://localhost:6333",
+    force_recreate: bool = False
+):
+    """
+    Loads the existing Qdrant vector store and cached documents.
+    """
+    logging.info(f"Attempting to load Qdrant collection '{collection_name}'...")
+    
+    # Set batch size for operations (only used for from_documents)
+    VECTOR_BATCH_SIZE = 250
+    
+    # Initialize embeddings
+    dense_embeddings = SentenceTransformerEmbeddings(
+        model_name="BAAI/bge-large-en-v1.5",
+        model_kwargs={"trust_remote_code": True, "device": device},
+        encode_kwargs={'normalize_embeddings':True}
+    )
+    
+    # Initialize sparse embeddings
+    sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25", providers=["CUDAExecutionProvider"], threads=4)
+    
+    # Load cached documents
+    if not os.path.exists(docs_cache_path):
+        raise FileNotFoundError(f"Document cache not found: {docs_cache_path}. Please run ingestion first.")
+    
+    docs = joblib.load(docs_cache_path)
+    logging.info(f"Loaded {len(docs)} cached document chunks.")
+    
+    # Use gRPC for better performance
+    import re
+    host_match = re.match(r'https?://([^:/]+)(?::\d+)?', qdrant_url)
+    grpc_host = host_match.group(1) if host_match else "localhost"
+    grpc_port = 6334  # Default gRPC port for Qdrant
+    
+    # First try with gRPC
+    try:
+        # THE FIX: Specify the vector_name as "default"
+        vector_store = QdrantVectorStore.from_existing_collection(
+            embedding=dense_embeddings,
+            sparse_embedding=sparse_embeddings,
+            collection_name=collection_name,
+            host=grpc_host,
+            port=grpc_port,
+            prefer_grpc=True,
+            retrieval_mode=RetrievalMode.HYBRID,
+            vector_name="default"  # Add this parameter
+        )
+        logging.info(f"Successfully loaded collection '{collection_name}' with hybrid search support via gRPC.")
+        return docs, vector_store, dense_embeddings, sparse_embeddings
+    except Exception as e:
+        grpc_error = str(e)
+        logging.warning(f"Error connecting with gRPC: {grpc_error}. Trying HTTP...")
+        
+        # Fall back to HTTP
+        try:
+            # THE FIX: Also specify vector_name here
+            vector_store = QdrantVectorStore.from_existing_collection(
+                embedding=dense_embeddings,
+                sparse_embedding=sparse_embeddings,
+                collection_name=collection_name,
+                url=qdrant_url,
+                retrieval_mode=RetrievalMode.HYBRID,
+                vector_name="default"  # Add this parameter
+            )
+            logging.info(f"Successfully loaded collection '{collection_name}' with hybrid search support via HTTP.")
+            return docs, vector_store, dense_embeddings, sparse_embeddings
+        except Exception as e2:
+            http_error = str(e2)
+            
+            # If force_recreate is True, recreate the collection
+            if force_recreate:
+                logging.warning(f"Error connecting to collection '{collection_name}'. Recreating collection...")
+                
+                # Convert to LangChain documents format
+                from langchain_core.documents import Document as LangchainDocument
+                langchain_docs = []
+                for doc in docs:
+                    langchain_docs.append(LangchainDocument(
+                        page_content=doc.page_content,
+                        metadata=doc.metadata
+                    ))
+                
+                # First try to recreate with gRPC
+                try:
+                    # THE FIX: Also specify vector_name when creating
+                    vector_store = QdrantVectorStore.from_documents(
+                        langchain_docs,
+                        embedding=dense_embeddings,
+                        sparse_embedding=sparse_embeddings,
+                        host=grpc_host,
+                        port=grpc_port,
+                        prefer_grpc=True,
+                        collection_name=collection_name,
+                        force_recreate=True,
+                        retrieval_mode=RetrievalMode.HYBRID,
+                        batch_size=VECTOR_BATCH_SIZE,
+                        vector_name="default"  # Add this parameter
+                    )
+                    logging.info(f"Successfully recreated collection '{collection_name}' with hybrid search support via gRPC.")
+                    return docs, vector_store, dense_embeddings, sparse_embeddings
+                except Exception as e3:
+                    logging.warning(f"Error recreating with gRPC: {e3}. Trying HTTP...")
+                    
+                    # Fall back to HTTP if gRPC fails
+                    # THE FIX: Also specify vector_name here
+                    vector_store = QdrantVectorStore.from_documents(
+                        langchain_docs,
+                        embedding=dense_embeddings,
+                        sparse_embedding=sparse_embeddings,
+                        url=qdrant_url,
+                        collection_name=collection_name,
+                        force_recreate=True,
+                        retrieval_mode=RetrievalMode.HYBRID,
+                        batch_size=VECTOR_BATCH_SIZE,
+                        vector_name="default"  # Add this parameter
+                    )
+                    logging.info(f"Successfully recreated collection '{collection_name}' with hybrid search support via HTTP.")
+                    return docs, vector_store, dense_embeddings, sparse_embeddings
+            else:
+                # If it's a different error, propagate it
+                logging.error(f"Error loading Qdrant collection: {http_error}")
+                raise
+
+# Make the same changes to initialize_documents_and_vector_store
 def initialize_documents_and_vector_store(doc_folder: str = "./docs",
                                          collection_name: str = "my_collection",
                                          docs_cache_path: str = "docs_cache.joblib",
                                          state_cache_path: str = "docs_state.json",
-                                         url: str = "http://localhost:6333",
-                                         use_semantic_chunking: bool = True):  # New parameter
+                                         url: str = "http://localhost:6333"):
     """
     Initialize or update document store with optimized batching and vector operations.
-    
-    Args:
-        doc_folder: Folder containing documents to process
-        collection_name: Name of Qdrant collection to use
-        docs_cache_path: Path to cache processed documents
-        state_cache_path: Path to cache document folder state
-        url: URL of Qdrant server
-        use_semantic_chunking: Whether to use semantic chunking (True) or structural chunking (False)
     """
     init_start = time.perf_counter()
     
@@ -551,7 +806,7 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
     dense_embeddings = SentenceTransformerEmbeddings(
         model_name="BAAI/bge-large-en-v1.5",
         model_kwargs={"trust_remote_code": True, "device": device},
-        encode_kwargs={'normalize_embeddings':True }
+        encode_kwargs={'normalize_embeddings':True}
     )
     
     # 2. Initialize the sparse embedding model
@@ -572,30 +827,67 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
     # 5. Determine if reprocessing is needed
     reprocess = (current_state != previous_state)
     
-    # Check if the Qdrant collection exists
+    # Use gRPC for better performance
     from qdrant_client import QdrantClient
-    client = QdrantClient(url=url)
+    
+    # Extract host from URL
+    import re
+    host_match = re.match(r'https?://([^:/]+)(?::\d+)?', url)
+    grpc_host = host_match.group(1) if host_match else "localhost"
+    grpc_port = 6334  # Default gRPC port for Qdrant
+    
+    # Create client with gRPC preference
     try:
+        client = QdrantClient(
+            host=grpc_host,
+            port=grpc_port,
+            prefer_grpc=True,
+            timeout=5.0
+        )
         collections = client.get_collections().collections
         collection_exists = any(collection.name == collection_name for collection in collections)
+        using_grpc = True
+        logging.info("Successfully connected to Qdrant using gRPC")
     except Exception as e:
-        logging.error(f"Error connecting to Qdrant: {e}")
-        collection_exists = False
+        logging.error(f"Error connecting to Qdrant via gRPC: {e}")
+        logging.warning(f"Falling back to HTTP connection")
+        client = QdrantClient(url=url)
+        try:
+            collections = client.get_collections().collections
+            collection_exists = any(collection.name == collection_name for collection in collections)
+            using_grpc = False
+        except Exception as e2:
+            logging.error(f"Error connecting to Qdrant via HTTP: {e2}")
+            collection_exists = False
+            using_grpc = False
     
     if collection_exists and not reprocess:
         logging.info("Persistent vector store found. Loading from Qdrant...")
         
         try:
-            # Try to load with hybrid search capability
-            vector_store = QdrantVectorStore.from_existing_collection(
-                embedding=dense_embeddings,
-                sparse_embedding=sparse_embeddings,
-                collection_name=collection_name,
-                url=url,
-                retrieval_mode=RetrievalMode.HYBRID,
-                # batch_size=VECTOR_BATCH_SIZE
-            )
-            logging.info("Successfully loaded Qdrant collection with hybrid search support.")
+            # THE FIX: Add vector_name="default" parameter
+            if using_grpc:
+                vector_store = QdrantVectorStore.from_existing_collection(
+                    embedding=dense_embeddings,
+                    sparse_embedding=sparse_embeddings,
+                    collection_name=collection_name,
+                    host=grpc_host,
+                    port=grpc_port,
+                    prefer_grpc=True,
+                    retrieval_mode=RetrievalMode.HYBRID,
+                    vector_name="default"  # Add this parameter
+                )
+                logging.info("Successfully loaded Qdrant collection with hybrid search support via gRPC.")
+            else:
+                vector_store = QdrantVectorStore.from_existing_collection(
+                    embedding=dense_embeddings,
+                    sparse_embedding=sparse_embeddings,
+                    collection_name=collection_name,
+                    url=url,
+                    retrieval_mode=RetrievalMode.HYBRID,
+                    vector_name="default"  # Add this parameter
+                )
+                logging.info("Successfully loaded Qdrant collection with hybrid search support via HTTP.")
         except Exception as e:
             if "does not contain sparse vectors" in str(e):
                 logging.warning(f"Collection exists but doesn't support hybrid search: {e}")
@@ -615,20 +907,13 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
                 metadata_docs = create_documents_from_data(degree_programs_data)
                 documents.extend(metadata_docs)
                 
-                # Choose chunking method based on parameter
-                if use_semantic_chunking:
-                    docs = simple_split(
-                        documents,
-                        target_chunk_size=512
-                    )
-                    logging.info(f"Created {len(docs)} document chunks using semantic chunking.")
-                else:
-                    docs = simple_split(
-                        documents,
-                        target_chunk_size=512
-                    )
-                    logging.info(f"Created {len(docs)} document chunks using structural chunking.")
-                    
+                # Use our new unified chunker
+                docs =  improved_document_chunker(
+                            documents,
+                            min_chunk_size=300,  # Prevents tiny chunks
+                            chunk_size=1500,
+                            chunk_overlap=150
+                        )
                 joblib.dump(docs, docs_cache_path)
     
     # If collection doesn't exist, needs to be recreated for hybrid search, or documents have changed
@@ -639,34 +924,68 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
         metadata_docs = create_documents_from_data(degree_programs_data)
         documents.extend(metadata_docs)
         
-        # Choose chunking method based on parameter
-        if use_semantic_chunking:
-            docs = simple_split(
-                documents,
-                target_chunk_size=512
-            )
-            logging.info(f"Created {len(docs)} document chunks using semantic chunking.")
-        else:
-            docs = simple_split(
-                documents,
-                target_chunk_size=512
-            )
-            logging.info(f"Created {len(docs)} document chunks using structural chunking.")
-        
+        # Use our new unified chunker
+        docs =  improved_document_chunker(
+                    documents,
+                    min_chunk_size=300,  # Prevents tiny chunks
+                    chunk_size=1500,
+                    chunk_overlap=150
+                )
         # Convert to LangChain documents format
         langchain_docs = convert_to_langchain_docs(docs)
         
+        # Create new vector store using the preferred connection method
         logging.info(f"Building new vector store using QdrantVectorStore with hybrid search capability and batch size {VECTOR_BATCH_SIZE}...")
-        vector_store = QdrantVectorStore.from_documents(
-            langchain_docs,
-            embedding=dense_embeddings,
-            sparse_embedding=sparse_embeddings,
-            url=url,
-            collection_name=collection_name,
-            force_recreate=True,
-            retrieval_mode=RetrievalMode.HYBRID,
-            batch_size=VECTOR_BATCH_SIZE
-        )
+        try:
+            # THE FIX: Add vector_name="default" parameter 
+            if using_grpc:
+                vector_store = QdrantVectorStore.from_documents(
+                    langchain_docs,
+                    embedding=dense_embeddings,
+                    sparse_embedding=sparse_embeddings,
+                    host=grpc_host,
+                    port=grpc_port,
+                    prefer_grpc=True,
+                    collection_name=collection_name,
+                    force_recreate=True,
+                    retrieval_mode=RetrievalMode.HYBRID,
+                    batch_size=VECTOR_BATCH_SIZE,
+                    vector_name="default"  # Add this parameter
+                )
+                logging.info("Successfully created vector store via gRPC.")
+            else:
+                vector_store = QdrantVectorStore.from_documents(
+                    langchain_docs,
+                    embedding=dense_embeddings,
+                    sparse_embedding=sparse_embeddings,
+                    url=url,
+                    collection_name=collection_name,
+                    force_recreate=True,
+                    retrieval_mode=RetrievalMode.HYBRID,
+                    batch_size=VECTOR_BATCH_SIZE,
+                    vector_name="default"  # Add this parameter
+                )
+                logging.info("Successfully created vector store via HTTP.")
+        except Exception as e:
+            logging.error(f"Error creating vector store: {e}")
+            # If gRPC failed, try HTTP as a fallback
+            if using_grpc:
+                logging.warning("Falling back to HTTP for vector store creation")
+                vector_store = QdrantVectorStore.from_documents(
+                    langchain_docs,
+                    embedding=dense_embeddings,
+                    sparse_embedding=sparse_embeddings,
+                    url=url,
+                    collection_name=collection_name,
+                    force_recreate=True,
+                    retrieval_mode=RetrievalMode.HYBRID,
+                    batch_size=VECTOR_BATCH_SIZE,
+                    vector_name="default"  # Add this parameter
+                )
+                logging.info("Successfully created vector store via HTTP fallback.")
+            else:
+                raise
+
         joblib.dump(docs, docs_cache_path)
     
     try:
@@ -679,81 +998,6 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
     logging.info(f"Initialization took {init_end - init_start:.2f} seconds")
     return docs, vector_store, dense_embeddings, sparse_embeddings
 
-def load_existing_qdrant_store(
-    collection_name: str = "my_collection",
-    docs_cache_path: str = "docs_cache.joblib",
-    qdrant_url: str = "http://localhost:6333",
-    force_recreate: bool = False
-):
-    """
-    Loads the existing Qdrant vector store and cached documents.
-    """
-    logging.info(f"Attempting to load Qdrant collection '{collection_name}'...")
-    
-    # Set batch size for operations (only used for from_documents)
-    VECTOR_BATCH_SIZE = 250
-    
-    # Initialize embeddings
-    dense_embeddings = SentenceTransformerEmbeddings(
-        model_name="BAAI/bge-large-en-v1.5",
-        model_kwargs={"trust_remote_code": True, "device": device},
-        encode_kwargs={'normalize_embeddings':True }
-    )
-    
-    # Initialize sparse embeddings
-    sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25")
-    
-    # Load cached documents
-    if not os.path.exists(docs_cache_path):
-        raise FileNotFoundError(f"Document cache not found: {docs_cache_path}. Please run ingestion first.")
-    
-    docs = joblib.load(docs_cache_path)
-    logging.info(f"Loaded {len(docs)} cached document chunks.")
-    
-    # Check if the collection exists and supports hybrid search
-    try:
-        # Removed batch_size parameter
-        vector_store = QdrantVectorStore.from_existing_collection(
-            embedding=dense_embeddings,
-            sparse_embedding=sparse_embeddings,
-            collection_name=collection_name,
-            url=qdrant_url,
-            retrieval_mode=RetrievalMode.HYBRID
-        )
-        logging.info(f"Successfully loaded collection '{collection_name}' with hybrid search support.")
-        return docs, vector_store, dense_embeddings, sparse_embeddings
-    except Exception as e:
-        error_message = str(e)
-        if "does not contain sparse vectors" in error_message and force_recreate:
-            logging.warning(f"Collection '{collection_name}' doesn't support hybrid search. Recreating collection...")
-            
-            # Convert to LangChain documents format
-            from langchain_core.documents import Document as LangchainDocument
-            langchain_docs = []
-            for doc in docs:
-                langchain_docs.append(LangchainDocument(
-                    page_content=doc.page_content,
-                    metadata=doc.metadata
-                ))
-            
-            # Create a new collection with hybrid search support
-            vector_store = QdrantVectorStore.from_documents(
-                langchain_docs,
-                embedding=dense_embeddings,
-                sparse_embedding=sparse_embeddings,
-                url=qdrant_url,
-                collection_name=collection_name,
-                force_recreate=True,
-                retrieval_mode=RetrievalMode.HYBRID,
-                batch_size=VECTOR_BATCH_SIZE  # This is ok for from_documents
-            )
-            logging.info(f"Successfully recreated collection '{collection_name}' with hybrid search support.")
-            return docs, vector_store, dense_embeddings, sparse_embeddings
-        else:
-            # If force_recreate is False or it's a different error, just raise it
-            logging.error(f"Error loading Qdrant collection: {error_message}")
-            raise
-
 if __name__ == "__main__":
     # Install required dependencies if not already installed
     try:
@@ -763,13 +1007,41 @@ if __name__ == "__main__":
         print("Installing required dependencies...")
         subprocess.check_call(["pip", "install", "langchain-qdrant", "fastembeddings"])
         print("Dependencies installed successfully.")
-        
+    
+    try:
+        import grpc
+    except ImportError:
+        import subprocess
+        print("Installing gRPC dependencies...")
+        subprocess.check_call(["pip", "install", "grpcio", "grpcio-tools"])
+        print("gRPC dependencies installed successfully.")
+    
+    # Check if Qdrant is available with gRPC
+    from qdrant_client import QdrantClient
+    try:
+        client = QdrantClient(host="localhost", port=6334, prefer_grpc=True, timeout=5.0)
+        client.get_collections()
+        print("Successfully connected to Qdrant using gRPC!")
+    except Exception as e:
+        print(f"Could not connect to Qdrant using gRPC: {e}")
+        print("Will try HTTP instead. For better performance, ensure Qdrant server has gRPC enabled (port 6334).")
+    
     # Initialize or load documents and vector store
     docs, vector_store, dense_embeddings, sparse_embeddings = initialize_documents_and_vector_store(
         doc_folder=DOC_FOLDER,
         collection_name=PERSIST_COLLECTION,
         url=QDRANT_URL,
-        use_semantic_chunking=True
     )
+    
+    # Run a quick test search to verify everything is working
+    query = "What are the computer science degree programs?"
+    results = vector_store.similarity_search_with_score(query, k=3)
+    
+    print("\n=== Sample Search Results ===")
+    for doc, score in results:
+        print(f"Score: {score:.4f}")
+        print(f"Content: {doc.page_content[:150]}...")
+        print(f"Metadata: {doc.metadata}")
+        print("-" * 50)
 
     print("\nIngestion and search testing completed successfully.")

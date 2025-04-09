@@ -1,0 +1,51 @@
+# requirements.txt for RAG Project
+# Derived from pip freeze output - includes only packages seemingly used by the project code.
+# NOTE: PyTorch (+ torchvision, + torchaudio) MUST be installed MANUALLY first,
+# using the correct --index-url for your CUDA version, BEFORE running pip install -r on this file.
+# Example for CUDA 12.1 (based on original freeze):
+# pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 torchaudio==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+
+# --- Core Frameworks ---
+fastapi==0.115.8
+uvicorn==0.34.0  # For ASGI server (consider installing with 'standard' extras: pip install "uvicorn[standard]==0.34.0")
+pydantic==2.10.6 # Used for API models and LangChain data structures
+
+# --- LangChain Core & Components ---
+langchain==0.3.17
+langchain-core==0.3.33
+langchain-community==0.3.16
+langchain-huggingface==0.1.2 # Wrapper for HuggingFace embeddings
+langchain-qdrant==0.2.0     # Qdrant vector store integration
+langchain-text-splitters==0.3.5
+
+# --- Vector Store Client ---
+qdrant-client==1.13.3 # Qdrant client (installed by langchain-qdrant). Your code prefers gRPC.
+grpcio==1.71.0         # gRPC library (likely used by qdrant-client for gRPC connection)
+# grpcio-tools==1.70.0 # (Present in freeze, but usually not required for client-side gRPC usage - optional)
+
+# --- Machine Learning / Embeddings / Transformers ---
+# PyTorch lines removed - install manually first (see top comment)
+
+transformers==4.49.0       # Used for tokenizers (BGE) and potentially models
+sentence-transformers==3.4.1 # Used for embeddings and CrossEncoder
+
+# NOTE: You have fastembed-gpu installed, providing GPU support for sparse embeddings
+fastembed-gpu==0.6.0     # Used for FastEmbedSparse (GPU version)
+# onnxruntime-gpu==1.20.1 # (Present in freeze, likely used by fastembed-gpu)
+
+rank-bm25==0.2.2           # For BM25 keyword retrieval
+
+# --- LLM Clients ---
+ollama==0.4.7             # Python client for Ollama
+google-generativeai==0.8.4 # Python client for Google Gemini API
+
+# --- Document Processing & Loading ---
+docling==2.23.0           # PDF to Markdown conversion library
+docling-core==2.20.0      # Core library for docling
+pdfplumber==0.11.5        # Used for PDF text extraction
+PyMuPDF==1.25.2           # Provides 'fitz' for fallback PDF extraction
+
+# --- Utilities ---
+joblib==1.4.2             # Used for caching processed documents
+nltk==3.9.1               # Used by some text splitters for sentence tokenization
+python-dotenv==1.0.1      # (Likely used implicitly for loading env vars like API keys - good practice to include)
