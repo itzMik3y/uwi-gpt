@@ -506,209 +506,164 @@ def load_markdown_from_disk(filepath, markdown_dir=None):
     
     return None
 
-def improved_document_chunker(documents, min_chunk_size=300, chunk_size=1500, chunk_overlap=150):
+def improved_document_chunker(documents: List[Document], min_chunk_size=300, chunk_size=1500, chunk_overlap=150) -> List[Document]:
     """
-    An improved document chunker that prevents single-sentence chunks
-    and ensures all content is preserved in the output chunks.
-    
-    Args:
-        documents: List of Document objects to split
-        min_chunk_size: Minimum size threshold for identifying small chunks (characters)
-        chunk_size: Target maximum size of each chunk in characters
-        chunk_overlap: Number of characters to overlap between chunks
-        
-    Returns:
-        List of chunked Document objects with preserved metadata
-    """
-    import re
-    import logging
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    An improved document chunker that uses MarkdownTextSplitter and
+    merges small chunks with the *preceding* chunk to prevent very short chunks,
+    ensuring all content is preserved.
 
-    logging.info(f"Starting improved document chunking for {len(documents)} documents")
-    
-    # Define meaningful section separators in order of priority
-    separators = [
-        # Primary section breaks - only use these for initial splitting
-        "\n# ", "\n## ",     # Major headers (h1, h2)
-        "\n\n\n",            # Triple line break (major section)
-        "\n---\n", "\n***\n", # Horizontal rules (major section dividers)
-        
-        # Secondary breaks - use these if chunks are still too large
-        "\n### ", "\n#### ", # Minor headers (h3, h4)
-        "\n\n",              # Double line break (paragraph)
-        
-        # Last resort separators - only if chunks are very large
-        "\n", ". ", "! ", "? " # Line breaks and sentence boundaries
-    ]
-    
-    # Initialize the splitter with our major separators
-    text_splitter = RecursiveCharacterTextSplitter(
+    Args:
+        documents: List of Document objects to split (expected to have Markdown content).
+        min_chunk_size: Minimum size threshold for identifying small chunks (characters).
+                        Chunks smaller than this will be merged with the previous one if possible.
+        chunk_size: Target maximum size of each chunk in characters for the initial split.
+        chunk_overlap: Number of characters to overlap between chunks during the initial split.
+
+    Returns:
+        List of chunked Document objects with preserved metadata.
+    """
+    logging.info(f"Starting improved document chunking for {len(documents)} documents using MarkdownTextSplitter and backward merging.")
+
+    # Initialize the Markdown splitter
+    text_splitter = MarkdownTextSplitter(
         chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        separators=separators,
-        keep_separator=True
+        chunk_overlap=chunk_overlap
     )
-    
-    # Function to merge small chunks with adjacent chunks
-    def merge_small_chunks(chunks, texts, metadatas):
-        if not chunks:
+
+    # --- REFINED MERGE FUNCTION ---
+    def merge_small_chunks_backward(texts: List[str], metadatas: List[dict], min_size: int) -> tuple[List[str], List[dict]]:
+        """
+        Merges chunks smaller than min_size with the *preceding* chunk.
+        Iterates backward to handle multiple small chunks correctly.
+        """
+        if not texts:
             return [], []
-            
-        merged_texts = []
-        merged_metadatas = []
-        
-        i = 0
-        while i < len(chunks):
-            current_chunk = chunks[i]
-            current_text = texts[i]
-            current_metadata = metadatas[i].copy()
-            
-            # Check if this chunk is too small and not the last one
-            if len(current_text) < min_chunk_size and i < len(chunks) - 1:
-                # Merge with the next chunk
-                next_text = texts[i + 1]
-                next_metadata = metadatas[i + 1]
-                
-                # Update chunk counts and indices
-                total_chunks = current_metadata.get("chunk_count", 1)
-                
-                # Create combined metadata
-                combined_metadata = current_metadata.copy()
-                if "chunk_title" in next_metadata and "chunk_title" not in combined_metadata:
-                    combined_metadata["chunk_title"] = next_metadata["chunk_title"]
-                
-                # If both chunks have titles, append them
-                if "chunk_title" in current_metadata and "chunk_title" in next_metadata:
-                    combined_metadata["chunk_title"] = f"{current_metadata['chunk_title']} + {next_metadata['chunk_title']}"
-                
-                # Add the merged chunk
-                merged_texts.append(current_text + "\n\n" + next_text)
-                merged_metadatas.append(combined_metadata)
-                
-                # Skip the next chunk since we merged it
-                i += 2
-            else:
-                # Add the current chunk as is
-                merged_texts.append(current_text)
-                merged_metadatas.append(current_metadata)
-                i += 1
-        
-        # Second pass to catch any remaining small chunks at the end
-        if len(merged_texts) > 1:
-            final_texts = []
-            final_metadatas = []
-            
-            for i in range(len(merged_texts)):
-                current_text = merged_texts[i]
-                current_metadata = merged_metadatas[i]
-                
-                # If this is the last chunk and it's too small, merge with previous
-                if i == len(merged_texts) - 1 and len(current_text) < min_chunk_size and final_texts:
-                    # Merge with the previous chunk
-                    prev_idx = len(final_texts) - 1
-                    prev_text = final_texts[prev_idx]
-                    prev_metadata = final_metadatas[prev_idx]
-                    
-                    # Create combined metadata
-                    combined_metadata = prev_metadata.copy()
-                    if "chunk_title" in current_metadata and "chunk_title" not in combined_metadata:
-                        combined_metadata["chunk_title"] = current_metadata["chunk_title"]
-                    
-                    # If both chunks have titles, append them
-                    if "chunk_title" in prev_metadata and "chunk_title" in current_metadata:
-                        combined_metadata["chunk_title"] = f"{prev_metadata['chunk_title']} + {current_metadata['chunk_title']}"
-                    
-                    # Update the previous chunk with merged content
-                    final_texts[prev_idx] = prev_text + "\n\n" + current_text
-                    final_metadatas[prev_idx] = combined_metadata
-                else:
-                    # Add chunk as-is
-                    final_texts.append(current_text)
-                    final_metadatas.append(current_metadata)
-            
-            return final_texts, final_metadatas
-                
+
+        merged_texts = list(texts)
+        merged_metadatas = [m.copy() for m in metadatas] # Ensure we work with copies
+
+        i = len(merged_texts) - 1
+        while i > 0: # Start from the second-to-last chunk and go backward
+            current_text = merged_texts[i]
+            if len(current_text.strip()) < min_size:
+                # If the current chunk is too small, merge it with the previous one
+                logging.debug(f"Merging small chunk (index {i}, size {len(current_text.strip())}) backward.")
+
+                # Prepend the small chunk's content to the previous chunk's content
+                # Use a double newline as a separator
+                merged_texts[i-1] = merged_texts[i-1] + "\n\n" + current_text
+
+                # --- Metadata Merging Strategy ---
+                # Simple strategy: Keep the metadata of the preceding chunk (i-1)
+                # Optionally, you could try to combine titles or other fields if needed.
+                # For now, we just discard the metadata of the small chunk being merged.
+                # Example combining titles (if desired):
+                # prev_meta = merged_metadatas[i-1]
+                # current_meta = merged_metadatas[i]
+                # if "chunk_title" in current_meta and "chunk_title" not in prev_meta:
+                #     prev_meta["chunk_title"] = current_meta["chunk_title"]
+                # elif "chunk_title" in prev_meta and "chunk_title" in current_meta and prev_meta["chunk_title"] != current_meta["chunk_title"]:
+                #     prev_meta["chunk_title"] = f"{prev_meta['chunk_title']} | {current_meta['chunk_title']}"
+                # merged_metadatas[i-1] = prev_meta # Update the previous metadata
+
+                # Remove the merged chunk (text and metadata)
+                del merged_texts[i]
+                del merged_metadatas[i]
+
+                # Important: Since we deleted element at index i, the next element to check
+                # is now also at index i (if i < len(merged_texts)).
+                # However, our loop condition `i > 0` and decrementing `i` handles this correctly.
+                # We don't need to adjust `i` further here after deletion when iterating backward.
+
+            i -= 1 # Move to the previous chunk
+
+        # After backward merging, check if the *first* chunk is now too small.
+        # It cannot be merged backward, so log a warning if it's smaller than min_size.
+        if merged_texts and len(merged_texts[0].strip()) < min_size:
+             logging.warning(f"The first chunk remains smaller than min_chunk_size ({len(merged_texts[0].strip())} chars) after backward merging.")
+
         return merged_texts, merged_metadatas
-    
+    # --- END REFINED MERGE FUNCTION ---
+
     result_chunks = []
-    
-    for doc in documents:
+    total_chunks_processed = 0
+
+    for doc_index, doc in enumerate(documents):
         if not doc.page_content or not doc.page_content.strip():
-            logging.warning(f"Skipping empty document: {doc.metadata.get('source_file', 'unknown')}")
+            logging.warning(f"Skipping empty document: {doc.metadata.get('source_file', f'doc_index_{doc_index}')}")
             continue
-            
-        # Preserve and enrich metadata 
+
         doc_metadata = doc.metadata.copy()
-        
-        # Extract document title/heading if available
+
+        # Extract document title/heading (same logic as before)
         content_lines = doc.page_content.strip().split('\n')
         doc_title = None
-        
-        # Try to find a title (first markdown header or first line)
-        for line in content_lines[:5]:  # Check first few lines
-            if re.match(r'^#{1,6}\s+(.+)$', line):
-                doc_title = re.match(r'^#{1,6}\s+(.+)$', line).group(1)
+        for line in content_lines[:5]:
+            match = re.match(r'^#{{1,6}}\s+(.+)$', line)
+            if match:
+                doc_title = match.group(1).strip()
                 break
-        
-        # If no markdown header found, use first line as title
         if not doc_title and content_lines:
             doc_title = content_lines[0].strip()
-            # Limit length for titles extracted from first line
-            if len(doc_title) > 80:
-                doc_title = doc_title[:77] + "..."
-                
-        # Add title to metadata
+            if len(doc_title) > 100:
+                 doc_title = doc_title[:97] + "..."
         if doc_title:
-            doc_metadata["title"] = doc_title
-        
-        # Split the document content
-        chunks = text_splitter.split_text(doc.page_content)
-        
-        # Prepare metadata for each chunk
-        chunk_metadatas = []
-        for i in range(len(chunks)):
-            # Create new metadata for this chunk
+            doc_metadata["doc_title"] = doc_title
+
+        # Split the document content using MarkdownTextSplitter
+        split_texts = text_splitter.split_text(doc.page_content)
+
+        if not split_texts:
+             logging.warning(f"MarkdownTextSplitter produced no chunks for document: {doc.metadata.get('source_file', f'doc_index_{doc_index}')}")
+             continue
+
+        # Prepare initial metadata for each chunk
+        initial_metadatas = []
+        for i, text_chunk in enumerate(split_texts):
             chunk_metadata = doc_metadata.copy()
-            
-            # Add chunk position info
-            chunk_metadata["chunk_index"] = i
-            chunk_metadata["chunk_count"] = len(chunks)
-            
-            # Extract chunk title/heading if present
-            chunk_lines = chunks[i].strip().split('\n')
+            # Store initial index for reference, though it will be overwritten later
+            chunk_metadata["initial_chunk_index"] = i
+
+            # Extract chunk title/heading (same logic as before)
+            chunk_lines = text_chunk.strip().split('\n')
             chunk_title = None
-            
-            for line in chunk_lines[:3]:  # Check first few lines
-                if re.match(r'^#{1,6}\s+(.+)$', line):
-                    chunk_title = re.match(r'^#{1,6}\s+(.+)$', line).group(1)
+            for line in chunk_lines[:3]:
+                match = re.match(r'^#{{1,6}}\s+(.+)$', line)
+                if match:
+                    chunk_title = match.group(1).strip()
                     break
-            
             if chunk_title:
                 chunk_metadata["chunk_title"] = chunk_title
-                
-            chunk_metadatas.append(chunk_metadata)
-        
-        # Merge small chunks with adjacent ones
-        merged_texts, merged_metadatas = merge_small_chunks(chunks, chunks, chunk_metadatas)
-        
-        # Create final document chunks - always include all chunks regardless of size
+
+            initial_metadatas.append(chunk_metadata)
+
+        # Merge small chunks using the backward merging function
+        merged_texts, merged_metadatas = merge_small_chunks_backward(split_texts, initial_metadatas, min_chunk_size)
+
+        # Create final Document objects for the merged chunks
+        num_chunks_in_doc = len(merged_texts)
         for i, (text, metadata) in enumerate(zip(merged_texts, merged_metadatas)):
-            # Update chunk indices after merging
+            # Update chunk indices and count based on the final list after merging
             metadata["chunk_index"] = i
-            metadata["chunk_count"] = len(merged_texts)
-            
-            # Log when we're including a small chunk but still keep it
+            metadata["chunk_count"] = num_chunks_in_doc
+
+            # Remove the temporary initial index if it exists
+            metadata.pop("initial_chunk_index", None)
+
+            # Log if a chunk is still small (should only be the first one potentially)
             if len(text.strip()) < min_chunk_size:
-                logging.info(f"Including small chunk of size {len(text)} characters from {metadata.get('source_file', 'unknown')}")
-            
-            # Always add the chunk to results
+                 # This logging might be redundant given the warning inside merge_small_chunks_backward
+                 pass # logging.info(f"Including first chunk smaller than min_size ({len(text.strip())}) from {metadata.get('source_file', 'unknown')}")
+
             result_chunks.append(Document(
                 page_content=text.strip(),
                 metadata=metadata
             ))
-    
-    logging.info(f"Chunking completed: generated {len(result_chunks)} chunks from {len(documents)} documents")
+        total_chunks_processed += num_chunks_in_doc
+
+    logging.info(f"Chunking completed: generated {len(result_chunks)} total chunks from {len(documents)} documents.")
     return result_chunks
+
 
 def load_existing_qdrant_store(
     collection_name: str = "my_collection",

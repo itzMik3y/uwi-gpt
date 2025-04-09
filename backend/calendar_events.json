@@ -62,7 +62,7 @@
           "canedit": false,
           "candelete": false,
           "deleteurl": "https://vle.mona.uwi.edu/calendar/delete.php?id=86795&course=10865",
-          "editurl": "https://vle.mona.uwi.edu/course/mod.php?update=388676&return=1&sesskey=ShLSbxct74",
+          "editurl": "https://vle.mona.uwi.edu/course/mod.php?update=388676&return=1&sesskey=QlZFmOQkBM",
           "viewurl": "https://vle.mona.uwi.edu/calendar/view.php?view=day&course=10865&time=1744261140#event_86795",
           "formattedtime": "<a href=\"https://vle.mona.uwi.edu/calendar/view.php?view=day&amp;time=1744261140\">Wednesday, 9 April</a>, 11:59 PM",
           "formattedlocation": "",
@@ -76,7 +76,7 @@
             "name": "Attempt quiz now",
             "url": "https://vle.mona.uwi.edu/mod/quiz/view.php?id=388676",
             "itemcount": 1,
-            "actionable": false,
+            "actionable": true,
             "showitemcount": false
           },
           "purpose": "assessment",

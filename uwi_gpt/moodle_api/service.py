@@ -19,8 +19,10 @@ def fetch_moodle_details(credentials: MoodleCredentials):
     """
     Logs into Moodle, scrapes profile, courses and calendar events.
     Removes courseimage data before returning.
+    Also returns login token and sesskey for potential reuse.
     Raises HTTPException on failure.
     """
+    print(f"Received credentials - Username: {credentials.username}, Password: {credentials.password}")
     session = requests.Session() # Use a session object for all requests to handle cookies
     try:
         # --- Steps 1-7 remain the same (Login, Sesskey, Profile Info) ---
@@ -177,9 +179,12 @@ def fetch_moodle_details(credentials: MoodleCredentials):
             print(f"Warning: Error processing calendar data to remove images: {proc_err}")
         # --- MODIFICATION END ---
 
+        # Extract session cookie for potential reuse
+        moodle_session_cookie = session.cookies.get("MoodleSession", "")
+        print(f"Session cookie extracted: {moodle_session_cookie[:5]}..." if moodle_session_cookie else "No session cookie found")
 
-        # 11) Return combined data (now without course images)
-        print("Returning combined data (images excluded).")
+        # 11) Return combined data (now without course images) and include auth tokens
+        print("Returning combined data with auth tokens (images excluded).")
         # Extract the actual 'data' part from the list structure Moodle returns
         courses_result_data = courses_service_data[0].get('data', {}) if isinstance(courses_service_data, list) and courses_service_data else courses_service_data
         calendar_result_data = calendar_service_data[0].get('data', {}) if isinstance(calendar_service_data, list) and calendar_service_data else calendar_service_data
@@ -187,10 +192,16 @@ def fetch_moodle_details(credentials: MoodleCredentials):
         return {
             "user_info": {
                 "name": user_name,
-                "email": user_email
+                "email": user_email,
+                "student_id": credentials.username
             },
             "courses": courses_result_data, # Return the inner 'data' object/dict
-            "calendar_events": calendar_result_data # Return the inner 'data' object/dict
+            "calendar_events": calendar_result_data, # Return the inner 'data' object/dict
+            "auth_tokens": {
+                "login_token": logintoken,
+                "sesskey": sesskey,
+                "moodle_session": moodle_session_cookie
+            }
         }
 
     # Keep robust exception handling for the service

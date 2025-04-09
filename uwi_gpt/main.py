@@ -9,6 +9,7 @@ into a single API service.
 import uvicorn
 import logging
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 # Import routers from the modules
 from moodle_api.router import router as moodle_router
@@ -31,6 +32,16 @@ app = FastAPI(
     description="Provides access to Moodle data and a RAG-based QA system.",
     version="1.0.0"
 )
+
+# --- Configure CORS ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],  # Add your frontend URLs
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods
+    allow_headers=["*"],  # Allow all headers
+)
+logger.info("CORS middleware added to allow cross-origin requests")
 
 # --- Startup Event ---
 @app.on_event("startup")
