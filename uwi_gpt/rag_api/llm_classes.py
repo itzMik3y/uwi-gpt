@@ -103,7 +103,7 @@ class GeminiLLM(LLM):
     temperature: float = 0.0
     top_p: float = 0.95
     top_k: int = 40
-    max_output_tokens: int = 2048
+    max_output_tokens: int = 4048
     
     def __init__(self, api_key: str, model_name: str = "models/gemini-2.0-flash-lite", 
                  temperature: float = 0.0, top_p: float = 0.95, top_k: int = 40,

@@ -5,7 +5,7 @@ with enhanced BM25 tokenization and adaptive weighting
 """
 
 import logging
-import re
+import re # Make sure re is imported
 import string
 from typing import List, Dict, Any
 from pydantic import PrivateAttr
@@ -48,8 +48,11 @@ class EnhancedBM25Retriever(BaseRetriever):
     _bm25: BM25Okapi = PrivateAttr()
     _use_lemmatization: bool = PrivateAttr()
     _lemmatizer: WordNetLemmatizer = PrivateAttr()
+    _k1: float = PrivateAttr(default=1.5) # Added default
+    _b: float = PrivateAttr(default=0.75)  # Added default
 
-    def __init__(self, documents: list, k: int = 10, use_lemmatization: bool = True):
+    # Updated __init__ to accept k1, b
+    def __init__(self, documents: list, k: int = 10, use_lemmatization: bool = True, k1: float = 1.5, b: float = 0.75):
         """
         Initialize the enhanced BM25 retriever.
 
@@ -57,104 +60,124 @@ class EnhancedBM25Retriever(BaseRetriever):
             documents: List of Document objects (ensure they have page_content)
             k: Number of documents to retrieve
             use_lemmatization: Whether to use lemmatization (can be turned off for speed)
+            k1: BM25 parameter k1 (controls term frequency saturation)
+            b: BM25 parameter b (controls document length normalization)
         """
         super().__init__()
         if not documents:
             raise ValueError("Documents list cannot be empty for EnhancedBM25Retriever.")
-        
+
         self._documents = documents
         self._k = k
         self._use_lemmatization = use_lemmatization
-        
+        self._k1 = k1 # Store k1
+        self._b = b   # Store b
+
         # Initialize lemmatizer if needed
         if use_lemmatization:
             self._lemmatizer = WordNetLemmatizer()
-        
-        # Create a translation table to remove punctuation
-        translator = str.maketrans('', '', string.punctuation)
-        
+
+        # Create a translation table to remove punctuation (apply only during tokenization)
+        # translator = str.maketrans('', '', string.punctuation) # Moved translator use lower
+
         self._tokenized = []
         self._lemmatized = []
-        
+
+        # Prepare punctuation removal translator just once
+        translator = str.maketrans('', '', string.punctuation)
+
         for doc in documents:
             if hasattr(doc, 'page_content') and isinstance(doc.page_content, str):
-                # Convert to lowercase
                 text = doc.page_content.lower()
-                # Remove punctuation
+                # Remove punctuation before splitting
                 text_no_punct = text.translate(translator)
-                # Split into tokens
                 tokens = text_no_punct.split()
                 self._tokenized.append(tokens)
-                
+
                 # Lemmatize tokens if enabled
                 if use_lemmatization:
                     lemmatized_tokens = []
-                    for token in tokens:
-                        pos = get_wordnet_pos(token)
-                        lemma = self._lemmatizer.lemmatize(token, pos)
-                        lemmatized_tokens.append(lemma)
+                    for token in tokens: # Use tokens derived from text_no_punct
+                        if token: # Avoid empty strings if split creates them
+                            pos = get_wordnet_pos(token)
+                            lemma = self._lemmatizer.lemmatize(token, pos)
+                            lemmatized_tokens.append(lemma)
                     self._lemmatized.append(lemmatized_tokens)
             else:
-                self._tokenized.append([])
-                if use_lemmatization:
-                    self._lemmatized.append([])
-        
+                # Append empty lists if document has no content or wrong type
+                 self._tokenized.append([])
+                 if use_lemmatization:
+                     self._lemmatized.append([])
+
+
         # Create BM25 index
-        if use_lemmatization:
-            logger.info(f"Initializing BM25Okapi with {len(self._lemmatized)} lemmatized documents.")
-            self._bm25 = BM25Okapi(self._lemmatized)
+        corpus_to_use = self._lemmatized if use_lemmatization and self._lemmatized else self._tokenized
+        if not any(corpus_to_use): # Check if corpus is empty or contains only empty lists
+             logger.warning("BM25 Corpus is empty or contains only empty documents. BM25 may not function correctly.")
+             # Initialize with a dummy corpus to avoid errors, though results will be poor
+             self._bm25 = BM25Okapi([["dummy"]])
         else:
-            logger.info(f"Initializing BM25Okapi with {len(self._tokenized)} tokenized documents.")
-            self._bm25 = BM25Okapi(self._tokenized)
-        
+            logger.info(f"Initializing BM25Okapi with k1={self._k1}, b={self._b} using {'lemmatized' if use_lemmatization else 'tokenized'} corpus.")
+            self._bm25 = BM25Okapi(corpus_to_use, k1=self._k1, b=self._b) # Pass k1 and b
+
         logger.info("Enhanced BM25Retriever initialized.")
+
 
     def _get_relevant_documents(self, query: str, **kwargs) -> list:
         """
         Get documents relevant to the query using BM25 algorithm with lemmatization.
-
-        Args:
-            query: The query string
-            **kwargs: Additional arguments
-
-        Returns:
-            List of relevant documents
         """
-        # Clean and tokenize query
+        # Clean and tokenize query, removing punctuation
         query_lower = query.lower()
         translator = str.maketrans('', '', string.punctuation)
         query_no_punct = query_lower.translate(translator)
         tokens = query_no_punct.split()
-        
+
         # Lemmatize query tokens if enabled
         if self._use_lemmatization:
             lemmatized_query = []
             for token in tokens:
-                pos = get_wordnet_pos(token)
-                lemma = self._lemmatizer.lemmatize(token, pos)
-                lemmatized_query.append(lemma)
+                if token: # Avoid empty tokens
+                    pos = get_wordnet_pos(token)
+                    lemma = self._lemmatizer.lemmatize(token, pos)
+                    lemmatized_query.append(lemma)
             search_tokens = lemmatized_query
         else:
-            search_tokens = tokens
-        
+            search_tokens = [token for token in tokens if token] # Ensure no empty tokens
+
+        if not search_tokens:
+            logger.warning("Query produced no search tokens after processing.")
+            return []
+
         # Get BM25 scores
-        scores = self._bm25.get_scores(search_tokens)
-        
+        try:
+            scores = self._bm25.get_scores(search_tokens)
+        except Exception as e:
+             logger.error(f"Error getting BM25 scores: {e}", exc_info=True)
+             return [] # Return empty list on error
+
+
         # Combine documents with their scores
-        scored_docs = list(zip(self._documents, scores))
-        
+        # Ensure we only zip as many scores as we have documents
+        num_docs = len(self._documents)
+        scored_docs = list(zip(self._documents[:num_docs], scores[:num_docs]))
+
         # Sort documents by score in descending order
         scored_docs_sorted = sorted(scored_docs, key=lambda x: x[1], reverse=True)
-        
+
         # Add log for debugging scores
         if logger.isEnabledFor(logging.DEBUG):
-            top_scores = [f"{doc.metadata.get('source_file', 'unknown')}: {score:.4f}" 
-                         for doc, score in scored_docs_sorted[:5]]
+            top_scores = []
+            for doc, score in scored_docs_sorted[:5]:
+                 doc_id = getattr(doc, 'id', doc.metadata.get('source_file', 'unknown'))
+                 top_scores.append(f"ID: {doc_id}, Score: {score:.4f}")
             logger.debug(f"BM25 top scores: {top_scores}")
-        
+
+        # Return top k documents
         return [doc for doc, score in scored_docs_sorted[:self._k]]
 
     get_relevant_documents = _get_relevant_documents
+
 
 # For backward compatibility
 BM25Retriever = EnhancedBM25Retriever
@@ -164,142 +187,211 @@ class AdaptiveEnsembleRetriever(BaseRetriever):
     An adaptive retriever that adjusts weights based on query characteristics.
     """
     _retrievers: dict = PrivateAttr()
-    _threshold: float = PrivateAttr()
+    _threshold: float = PrivateAttr() # Note: Threshold currently not applied in _get_relevant_docs logic below
 
     def __init__(self, retrievers: Dict[str, BaseRetriever], threshold: float = 0.1):
         """
         Initialize the adaptive ensemble retriever.
-        
-        Args:
-            retrievers: Dictionary of retriever objects with keys like 'hybrid', 'semantic', 'bm25'
-            threshold: Minimum score threshold for documents to be included
         """
         super().__init__()
         self._retrievers = retrievers
-        self._threshold = threshold
+        self._threshold = threshold # Store threshold, but needs explicit application if desired
+
+    def _is_query_about_prereqs(self, query: str) -> bool:
+        """Checks if the query likely pertains to prerequisites using regex."""
+        query_lower = query.lower()
+        # Pattern explanation:
+        # \b           - word boundary
+        # (?:...)      - non-capturing group
+        # pre[- ]?     - "pre" followed by optional hyphen or space
+        # requisite    - the root word
+        # s?           - optional 's' for plural
+        # |            - OR
+        # requirements? - "requirement" with optional 's'
+        # \b           - word boundary
+        prereq_pattern = r'\b(?:pre[- ]?requisites?|requirements?)\b'
+        return bool(re.search(prereq_pattern, query_lower))
 
     def _get_weights_for_query(self, query: str) -> Dict[str, float]:
         """
-        Determine appropriate weights based on query characteristics.
-        
-        Args:
-            query: The query string
-            
-        Returns:
-            Dictionary mapping retriever names to weights
+        Determine appropriate weights based on query characteristics,
+        including robust check for prerequisite variations.
         """
         # Default weights
         weights = {
             "hybrid": 1.0,
-            "semantic": 0.8,
+            "semantic": 0.7,
             "bm25": 0.8,
-            "mmr": 0.7
+            "mmr": 0.6
         }
-        
-        # Check for course codes (e.g., COMP3456)
-        if re.search(r'\b[A-Z]{4}\d{4}\b', query):
-            # For course codes, boost BM25 for exact matches
-            logger.info("Query contains course code - boosting BM25 weight")
-            weights["bm25"] = 1.5
-            weights["hybrid"] = 1.2
-            weights["semantic"] = 0.7
-        
-        # Check for keyword/definition queries (usually short)
+        query_lower = query.lower()
+        is_course_code = bool(re.search(r'\b[A-Z]{4}\d{4}\b', query, re.IGNORECASE))
+        is_prereq_query = self._is_query_about_prereqs(query) # Use helper function
+
+
+        # Check for course codes OR prerequisite keywords (using regex check)
+        if is_course_code or is_prereq_query:
+            type_log = "Course Code" if is_course_code else "Prerequisite/Requirement"
+            logger.info(f"{type_log} query - Boosting BM25/Hybrid weights significantly")
+            weights["bm25"] = 1.8
+            weights["hybrid"] = 1.6
+            weights["semantic"] = 0.5
+            # weights["mmr"] = 0.3
+
+        # Keep other rules, ensure they check query_lower if needed
         elif len(query.split()) <= 3:
-            logger.info("Short query detected - boosting BM25 weight")
-            weights["bm25"] = 1.2
-            weights["hybrid"] = 1.0
-            weights["semantic"] = 0.8
-            
-        # Check for complex conceptual queries (usually longer)
+             logger.info("Short query detected - boosting BM25 weight")
+             weights["bm25"] = 1.2
+             weights["hybrid"] = 1.0
+             weights["semantic"] = 0.8
+
         elif len(query.split()) >= 8:
-            logger.info("Complex query detected - boosting semantic weight")
-            weights["semantic"] = 1.2
-            weights["hybrid"] = 1.3
-            weights["bm25"] = 0.7
-            weights["mmr"] = 0.9  # Diversity helps with complex queries
-        
-        # Check for policy or requirement questions
-        elif any(word in query.lower() for word in ["policy", "requirement", "rule", "regulation"]):
-            logger.info("Policy/requirement query detected")
-            weights["hybrid"] = 1.3
-            weights["semantic"] = 1.1
-            weights["mmr"] = 0.9  # Diversity helps with policy questions
-        
+             logger.info("Complex query detected - boosting semantic weight")
+             weights["semantic"] = 1.2
+             weights["hybrid"] = 1.3
+             weights["bm25"] = 0.7
+            #  weights["mmr"] = 0.9 # Restore MMR boost for complex queries
+
+        elif any(word in query_lower for word in ["policy", "rule", "regulation"]):
+             logger.info("Policy/rule query detected")
+             weights["hybrid"] = 1.3
+             weights["semantic"] = 1.1
+            #  weights["mmr"] = 0.9 # Restore MMR boost for policy questions
+
         return weights
 
     def _get_relevant_documents(self, query: str, **kwargs) -> list:
         """
-        Get documents relevant to the query using adaptive weighting.
-        
-        Args:
-            query: The query string
-            **kwargs: Additional arguments
-            
-        Returns:
-            List of relevant documents
+        Get documents relevant to the query using adaptive weighting and boosting,
+        with robust check for prerequisite query intent.
         """
-        # Determine weights based on query
         weights = self._get_weights_for_query(query)
-        
-        # Get documents from each retriever with their weights
-        doc_scores = {}
+        doc_scores = {} # Stores {doc_id: {"doc": doc_object, "score": float}}
+
+        # --- Extract potential course code from query for boosting ---
+        query_course_code_match = re.search(r'\b([A-Z]{4}\d{4})\b', query, re.IGNORECASE)
+        query_course_code = query_course_code_match.group(1).upper() if query_course_code_match else None
+        query_lower = query.lower()
+        # --- Use helper function to check query intent ---
+        is_query_about_prereqs = self._is_query_about_prereqs(query)
+        # ---
+
         for name, retriever in self._retrievers.items():
             if name not in weights:
                 logger.warning(f"No weight defined for retriever '{name}', skipping")
                 continue
-                
+
             weight = weights[name]
             try:
                 docs = retriever.get_relevant_documents(query, **kwargs)
-                
+
                 for rank, doc in enumerate(docs):
-                    score = weight * (1.0 / (rank + 1))
-                    
-                    # Boost if there's a heading
-                    if doc.metadata.get("heading", "N/A") != "N/A":
-                        score *= 1.1
-                    
-                    # Use consistent document ID
-                    if hasattr(doc, 'id'):
-                        doc_id = doc.id
-                    elif hasattr(doc, 'metadata') and 'source_file' in doc.metadata:
-                        doc_id = doc.metadata['source_file']
-                    else:
-                        doc_id = id(doc)  # Fallback to object ID
-                    
+                    # --- Calculate base score ---
+                    base_score_component = weight * (1.0 / (rank + 2)) # Smoothing=2
+
+                    # --- Determine Document ID ---
+                    doc_metadata = getattr(doc, 'metadata', {})
+                    doc_id = getattr(doc, 'id', None) or doc_metadata.get('id', None)
+                    if not doc_id:
+                         source_file = doc_metadata.get("source_file", "unknown")
+                         chunk_index = doc_metadata.get("chunk_index", -1)
+                         doc_id = f"{source_file}_{chunk_index}" if chunk_index != -1 else id(doc)
+
+                    # --- Apply Boosting ---
+                    boost_factor = 1.0
+                    doc_content_lower = getattr(doc, 'page_content', '').lower()
+
+                    # 1. Boost for Heading
+                    if doc_metadata.get("heading", "N/A") != "N/A":
+                        boost_factor *= 1.1
+
+                    # 2. Boost for Document Type
+                    doc_type = doc_metadata.get("doc_type", "general")
+                    if doc_type in ["course_description", "requirement"]:
+                         boost_factor *= 1.2
+
+                    # 3. Boost for Specific Course Code Match
+                    associated_code = doc_metadata.get("associated_course_code", None)
+                    code_match_found = False
+                    if query_course_code:
+                        if associated_code and associated_code.upper() == query_course_code:
+                            code_match_found = True
+                            boost_factor *= 1.5 # Strong boost for metadata match
+                        elif query_course_code.lower() in doc_content_lower:
+                             code_match_found = True # Indicate match found, maybe smaller boost later
+                             boost_factor *= 1.1 # Smaller boost for just content match
+
+
+                    # 4. Boost based on Prerequisite context (using query intent AND doc content)
+                    # Define keywords robustly using regex for variations within the document content as well
+                    prereq_keywords_pattern_doc = r'\b(?:pre[- ]?requisites?|anti[- ]?requisites?|co[- ]?requisites?|requirements?|required before)\b'
+                    doc_contains_prereq_term = bool(re.search(prereq_keywords_pattern_doc, doc_content_lower))
+
+                    if is_query_about_prereqs: # Check query intent first
+                        boost_factor *= 1.2 # Base boost if query asks about prereqs
+                        if doc_contains_prereq_term:
+                             boost_factor *= 1.3 # Extra boost if doc also mentions them (total ~1.56x)
+                             # logger.debug(f"Boosting doc {doc_id} strongly: query is prereq AND doc mentions prereq terms.")
+                        # else: logger.debug(f"Boosting doc {doc_id} moderately: query is prereq.")
+
+                    elif doc_contains_prereq_term: # Query not about prereqs, but doc mentions them
+                         boost_factor *= 1.1 # Smaller boost
+                         # logger.debug(f"Boosting doc {doc_id} slightly: doc mentions prereq terms.")
+
+
+                    # --- Calculate Final Score & Aggregate ---
+                    final_score_component = base_score_component * boost_factor
                     if doc_id in doc_scores:
-                        doc_scores[doc_id]["score"] += score
+                        doc_scores[doc_id]["score"] += final_score_component
                     else:
-                        doc_scores[doc_id] = {"doc": doc, "score": score}
-                        
+                        doc_scores[doc_id] = {"doc": doc, "score": final_score_component}
+
             except Exception as e:
-                logger.error(f"Error getting documents from {name} retriever: {e}")
-        
-        # Filter out docs below threshold
-        filtered = [item["doc"] for item in doc_scores.values() if item["score"] >= self._threshold]
-        
-        # Sort by final ensemble score
-        def get_doc_id(doc):
-            if hasattr(doc, 'id'):
-                return doc.id
-            elif hasattr(doc, 'metadata') and 'source_file' in doc.metadata:
-                return doc.metadata['source_file']
-            else:
-                return id(doc)
-        
-        sorted_docs = sorted(
-            filtered,
-            key=lambda d: doc_scores[get_doc_id(d)]["score"],
+                logger.error(f"Error getting/processing documents from {name} retriever: {e}", exc_info=True) # Added exc_info
+
+        # --- Filter, Sort, and Return ---
+        # Apply threshold if needed:
+        # filtered_items = [item for item in doc_scores.values() if item["score"] >= self._threshold]
+        filtered_items = list(doc_scores.values()) # Currently not applying threshold
+
+        sorted_items = sorted(
+            filtered_items,
+            key=lambda item: item["score"],
             reverse=True
         )
-        
-        # Log information about the result
-        logger.info(f"AdaptiveEnsembleRetriever found {len(sorted_docs)} documents with weights {weights}")
-        
-        return sorted_docs
+        final_docs = [item["doc"] for item in sorted_items]
+
+        # Optional Debugging Log
+        if logger.isEnabledFor(logging.DEBUG):
+             top_scores_log = []
+             # Need to map final_docs back to their scores for logging
+             scores_for_log = {get_doc_id(item['doc']): item['score'] for item in sorted_items[:5]}
+             for doc in final_docs[:5]:
+                 log_doc_id = get_doc_id(doc) # Use the same get_doc_id helper if you have it
+                 score = scores_for_log.get(log_doc_id, 'N/A')
+                 score_str = f"{score:.4f}" if isinstance(score, float) else str(score)
+                 top_scores_log.append(f"ID: {log_doc_id}, Score: {score_str}")
+             logger.debug(f"AdaptiveEnsembleRetriever top 5 final scores after boosting: {top_scores_log}")
+
+        logger.info(f"AdaptiveEnsembleRetriever produced {len(final_docs)} documents after aggregation/boosting with weights {weights}")
+
+        return final_docs
 
     get_relevant_documents = _get_relevant_documents
+
+
+# Helper function (assuming it's defined elsewhere or copy it here if needed)
+def get_doc_id(doc):
+     """Helper to get a consistent document ID."""
+     doc_metadata = getattr(doc, 'metadata', {})
+     doc_id = getattr(doc, 'id', None) or doc_metadata.get('id', None) # Prefer explicit ID if available
+     if not doc_id:
+          # Fallback using source and chunk index if available
+          source_file = doc_metadata.get("source_file", "unknown")
+          chunk_index = doc_metadata.get("chunk_index", -1)
+          doc_id = f"{source_file}_{chunk_index}" if chunk_index != -1 else id(doc) # Last resort: object ID
+     return doc_id
+
 
 # Helper function to create the adaptive ensemble retriever
 def create_adaptive_ensemble_retriever(hybrid_retriever, semantic_retriever, bm25_retriever, mmr_retriever=None):
@@ -309,74 +401,81 @@ def create_adaptive_ensemble_retriever(hybrid_retriever, semantic_retriever, bm2
         "semantic": semantic_retriever,
         "bm25": bm25_retriever
     }
-    
-    # Add MMR retriever if provided
+
     if mmr_retriever is not None:
         retrievers["mmr"] = mmr_retriever
-        
-    return AdaptiveEnsembleRetriever(retrievers)
 
-# Keep the old EnsembleRetriever for backward compatibility
+    # Consider passing the threshold from config if needed
+    return AdaptiveEnsembleRetriever(retrievers=retrievers) # Default threshold is 0.1
+
+# Keep the old EnsembleRetriever class definition below if needed for compatibility
+# ... (EnsembleRetriever class code remains unchanged) ...
 class EnsembleRetriever(BaseRetriever):
-    """
-    A retriever that combines multiple retrievers with different weights.
-    
-    This retriever allows for the combination of different retrieval strategies
-    (e.g., semantic and keyword-based) to get the best overall results.
-    """
-    _retrievers: list = PrivateAttr()
-    _weights: list = PrivateAttr()
-    _threshold: float = PrivateAttr()
+     """
+     A retriever that combines multiple retrievers with different weights.
 
-    def __init__(self, retrievers: list, weights: list, threshold: float = 0.1):
-        """
-        Initialize the ensemble retriever.
-        
-        Args:
-            retrievers: List of retriever objects
-            weights: List of weights for each retriever
-            threshold: Minimum score threshold for documents to be included
-        """
-        super().__init__()
-        if len(retrievers) != len(weights):
-            raise ValueError("The number of retrievers must match the number of weights.")
-        self._retrievers = retrievers
-        self._weights = weights
-        self._threshold = threshold
-        logger.warning("Using deprecated EnsembleRetriever, consider using AdaptiveEnsembleRetriever instead")
+     This retriever allows for the combination of different retrieval strategies
+     (e.g., semantic and keyword-based) to get the best overall results.
+     """
+     _retrievers: list = PrivateAttr()
+     _weights: list = PrivateAttr()
+     _threshold: float = PrivateAttr()
 
-    def _get_relevant_documents(self, query: str, **kwargs) -> list:
-        """
-        Get documents relevant to the query using multiple retrievers.
-        
-        Args:
-            query: The query string
-            **kwargs: Additional arguments
-            
-        Returns:
-            List of relevant documents
-        """
-        doc_scores = {}
-        for retriever, weight in zip(self._retrievers, self._weights):
-            docs = retriever.get_relevant_documents(query, **kwargs)
-            for rank, doc in enumerate(docs):
-                score = weight * (1.0 / (rank + 1))
-                # Slightly boost if there's a heading
-                if doc.metadata.get("heading", "N/A") != "N/A":
-                    score *= 1.1
-                doc_id = doc.metadata.get("source_file", doc.id)
-                if doc_id in doc_scores:
-                    doc_scores[doc_id]["score"] += score
-                else:
-                    doc_scores[doc_id] = {"doc": doc, "score": score}
-        # Filter out docs below threshold
-        filtered = [item["doc"] for item in doc_scores.values() if item["score"] >= self._threshold]
-        # Sort by final ensemble score
-        sorted_docs = sorted(
-            filtered,
-            key=lambda d: doc_scores[d.metadata.get("source_file", d.id)]["score"],
-            reverse=True
-        )
-        return sorted_docs
+     def __init__(self, retrievers: list, weights: list, threshold: float = 0.1):
+         """
+         Initialize the ensemble retriever.
 
-    get_relevant_documents = _get_relevant_documents
+         Args:
+             retrievers: List of retriever objects
+             weights: List of weights for each retriever
+             threshold: Minimum score threshold for documents to be included
+         """
+         super().__init__()
+         if len(retrievers) != len(weights):
+             raise ValueError("The number of retrievers must match the number of weights.")
+         self._retrievers = retrievers
+         self._weights = weights
+         self._threshold = threshold
+         logger.warning("Using deprecated EnsembleRetriever, consider using AdaptiveEnsembleRetriever instead")
+
+     def _get_relevant_documents(self, query: str, **kwargs) -> list:
+         """
+         Get documents relevant to the query using multiple retrievers.
+
+         Args:
+             query: The query string
+             **kwargs: Additional arguments
+
+         Returns:
+             List of relevant documents
+         """
+         doc_scores = {}
+         for retriever, weight in zip(self._retrievers, self._weights):
+              try: # Add basic error handling
+                 docs = retriever.get_relevant_documents(query, **kwargs)
+                 for rank, doc in enumerate(docs):
+                      score = weight * (1.0 / (rank + 1))
+                      # Slightly boost if there's a heading
+                      if getattr(doc, 'metadata', {}).get("heading", "N/A") != "N/A":
+                           score *= 1.1
+                      # Try to get a more stable ID
+                      doc_id = getattr(doc, 'id', None) or getattr(doc, 'metadata', {}).get("source_file", id(doc))
+
+                      if doc_id in doc_scores:
+                           doc_scores[doc_id]["score"] += score
+                      else:
+                           doc_scores[doc_id] = {"doc": doc, "score": score}
+              except Exception as e:
+                 logger.error(f"Error in deprecated EnsembleRetriever with retriever {type(retriever).__name__}: {e}", exc_info=True)
+
+         # Filter out docs below threshold
+         filtered_items = [item for item in doc_scores.values() if item["score"] >= self._threshold]
+         # Sort by final ensemble score
+         sorted_docs = sorted(
+             [item['doc'] for item in filtered_items], # Extract docs before sorting key access
+             key=lambda d: doc_scores[getattr(d, 'id', None) or getattr(d, 'metadata', {}).get("source_file", id(d))]["score"],
+             reverse=True
+         )
+         return sorted_docs
+
+     get_relevant_documents = _get_relevant_documents

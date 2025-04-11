@@ -13,7 +13,7 @@ from langchain.llms.base import LLM
 from langchain_qdrant import QdrantVectorStore, RetrievalMode
 from langchain.schema import BaseRetriever
 from sentence_transformers import CrossEncoder
-
+from dotenv import load_dotenv 
 # Global variables to store initialized components
 docs = None
 vector_store = None
@@ -34,7 +34,9 @@ def initialize_rag_resources():
     """
     Initialize all RAG-related resources during application startup.
     This includes documents, vector stores, embeddings, retrievers, and LLMs.
+    Uses adaptive ensemble retrieval with optimized k values and enhanced BM25.
     """
+    load_dotenv() 
     global docs, vector_store, dense_embeddings, sparse_embeddings, ensemble_retriever
     global hybrid_retriever, llm, cross_encoder, selected_llm_backend
     
@@ -65,10 +67,10 @@ def initialize_rag_resources():
                 
                 # Try again with force_recreate=True
                 docs, vector_store, dense_embeddings, sparse_embeddings = initialize_documents_and_vector_store(
-                    doc_folder=os.path.join(BASE_DIR, "rag_api", "docs"),  # Use absolute path
+                    doc_folder=os.path.join(BASE_DIR, "rag_api", "docs"),
                     collection_name="my_collection",
-                    docs_cache_path=os.path.join(BASE_DIR, "rag_api", "docs_cache.joblib"),  # Add this
-                    state_cache_path=os.path.join(BASE_DIR, "rag_api", "docs_state.json")  # Add this
+                    docs_cache_path=os.path.join(BASE_DIR, "rag_api", "docs_cache.joblib"),
+                    state_cache_path=os.path.join(BASE_DIR, "rag_api", "docs_state.json")
                 )
                 load_end = time.perf_counter()
                 logger.info(f"Successfully recreated Qdrant store with hybrid search in {load_end - load_start:.2f} seconds")
@@ -82,10 +84,10 @@ def initialize_rag_resources():
         
         from .ingestion import initialize_documents_and_vector_store
         docs, vector_store, dense_embeddings, sparse_embeddings = initialize_documents_and_vector_store(
-            doc_folder=os.path.join(BASE_DIR, "rag_api", "docs"),  # Use absolute path
+            doc_folder=os.path.join(BASE_DIR, "rag_api", "docs"),
             collection_name="my_collection",
-            docs_cache_path=os.path.join(BASE_DIR, "rag_api", "docs_cache.joblib"),  # Add this
-            state_cache_path=os.path.join(BASE_DIR, "rag_api", "docs_state.json")  # Add this
+            docs_cache_path=os.path.join(BASE_DIR, "rag_api", "docs_cache.joblib"),
+            state_cache_path=os.path.join(BASE_DIR, "rag_api", "docs_state.json")
         )
         fallback_end = time.perf_counter()
         logger.info(f"Full initialization took {fallback_end - fallback_start:.2f} seconds")
@@ -93,30 +95,35 @@ def initialize_rag_resources():
     # Initialize retrievers with the loaded resources
     retriever_init_start = time.perf_counter()
     
-    # Import BM25Retriever and EnsembleRetriever
-    from .retrievers import BM25Retriever, EnsembleRetriever
+    # Import enhanced retrievers
+    from .retrievers import EnhancedBM25Retriever, create_adaptive_ensemble_retriever
     
-    # Standard semantic retriever (dense embeddings only)
+    # Standard semantic retriever (dense embeddings only) with reduced k
     vector_store.retrieval_mode = RetrievalMode.DENSE
-    semantic_retriever = vector_store.as_retriever(search_kwargs={"k": 25})
+    semantic_retriever = vector_store.as_retriever(search_kwargs={"k": 20})
     
-    # BM25 retriever for traditional keyword search
-    bm25_retriever = BM25Retriever(docs, k=25)
-    
-    # MMR retriever for diversifying results
-    mmr_retriever = vector_store.as_retriever(
-        search_type="mmr", search_kwargs={"k": 25, "fetch_k": 30, "lambda_mult": 0.5}
+    # Enhanced BM25 retriever with lemmatization
+    bm25_retriever = EnhancedBM25Retriever(
+        docs, 
+        k=20,
+        use_lemmatization=True  # Enable lemmatization for better matching
     )
+    
+    # MMR retriever for diversifying results with reduced k
+    # mmr_retriever = vector_store.as_retriever(
+    #     search_type="mmr", 
+    #     search_kwargs={"k": 15, "fetch_k": 20, "lambda_mult": 0.5}
+    # )
     
     # Hybrid retriever that combines dense and sparse embeddings
     vector_store.retrieval_mode = RetrievalMode.HYBRID
-    hybrid_retriever = vector_store.as_retriever(search_kwargs={"k": 25})
+    hybrid_retriever = vector_store.as_retriever(search_kwargs={"k": 20})
 
-    # Ensemble retriever that combines multiple retrievers with different weights
-    ensemble_retriever = EnsembleRetriever(
-        retrievers=[hybrid_retriever, semantic_retriever, bm25_retriever],
-        weights=[1.0, 0.8, 0.8],  # Give higher weight to hybrid retriever
-        threshold=0.1
+    # Create adaptive ensemble retriever that adjusts weights based on query type
+    ensemble_retriever = create_adaptive_ensemble_retriever(
+        hybrid_retriever=hybrid_retriever,
+        semantic_retriever=semantic_retriever,
+        bm25_retriever=bm25_retriever
     )
     
     # Initialize the LLM based on selected backend
@@ -125,8 +132,25 @@ def initialize_rag_resources():
     retriever_init_end = time.perf_counter()
     logger.info(f"Retriever and LLM initialization took {retriever_init_end - retriever_init_start:.2f} seconds")
 
+    # Log which retrievers are active
+    retriever_config = {
+        "hybrid_retriever": "Enabled, k=15",
+        "semantic_retriever": "Enabled, k=15",
+        "bm25_retriever": f"Enabled, k=15, lemmatization={'Enabled' if bm25_retriever._use_lemmatization else 'Disabled'}",
+        "mmr_retriever": "Enabled, k=15, fetch_k=20, lambda_mult=0.5",
+        "ensemble_retriever": "Adaptive (query-dependent weights)",
+        "cross_encoder": "BAAI/bge-reranker-v2-m3"
+    }
+    logger.info(f"Retriever configuration: {retriever_config}")
+
     startup_end = time.perf_counter()
     logger.info(f"RAG resources initialized in {startup_end - startup_start:.2f} seconds.")
+    
+    return {
+        "docs_count": len(docs),
+        "retrievers": retriever_config,
+        "llm_backend": selected_llm_backend
+    }
 
 def rerank_with_crossencoder(query: str, docs: list) -> list:
     """Re-rank documents using a cross-encoder model"""
