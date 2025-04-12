@@ -1,8 +1,6 @@
-// app/chat/page.tsx
 "use client"
 
-import { useState } from "react"
-import Image from "next/image"
+import { useState, useRef, useEffect } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { 
@@ -26,6 +24,10 @@ import { Input } from "@/components/ui/input"
 import { Header } from "@/app/components/layout/Header"
 import { HorizontalNav } from "@/app/components/layout/HorizonatalNav"
 import { motion, AnimatePresence } from "framer-motion"
+import { useChat } from "@/app/hooks/useChat"
+import { Provider } from "react-redux"
+import { store } from "@/store/index"
+import ReactMarkdown from "react-markdown"
 
 // Define interface for nav items
 interface NavItem {
@@ -66,11 +68,45 @@ const chatItemVariants = {
   })
 };
 
-export default function ChatPage() {
-  const [message, setMessage] = useState("")
+// Message component that handles markdown rendering for bot messages
+const MessageContent = ({ content, sender }: { content: string, sender: 'user' | 'bot' }) => {
+  if (sender === 'user') {
+    return <p>{content}</p>;
+  }
+  
+  return (
+    <div className="prose prose-invert max-w-none">
+      <ReactMarkdown>
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+};
+
+// Wrap the page content with Redux Provider
+const ChatPageContent = () => {
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false)
   const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(false)
   const pathname = usePathname()
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  
+  // Use our custom hook for chat functionality
+  const { messages, isLoading, inputMessage, setInputMessage, sendMessage } = useChat();
+  
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
+  
+  // Handle pressing Enter key
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
   
   // Quick Actions sidebar items
   const quickActions: NavItem[] = [
@@ -139,17 +175,20 @@ export default function ChatPage() {
 
   return (
     <motion.div 
-      className="flex min-h-screen flex-col bg-white"
+      className="flex h-screen flex-col bg-white overflow-hidden"
       variants={pageVariants}
       initial="hidden"
       animate="visible"
       exit="exit"
     >
-      <Header />
+      {/* Header */}
+      <div className="flex-shrink-0">
+        <Header />
+      </div>
       
       {/* Horizontal Navbar */}
       <motion.div 
-        className="bg-gradient-to-b from-blue-600 to-blue-500 px-4 py-2"
+        className="flex-shrink-0 bg-gradient-to-b from-blue-600 to-blue-500 px-4 py-2"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.3 }}
@@ -157,12 +196,13 @@ export default function ChatPage() {
         <HorizontalNav />
       </motion.div>
       
-      <div className="flex flex-1">
+      {/* Main content area with fixed height */}
+      <div className="flex flex-1 overflow-hidden">
         {/* Left Sidebar - Quick Actions */}
         <aside 
           className={`
-            relative border-r bg-white transition-all duration-300 ease-in-out
-            ${leftSidebarCollapsed ? 'w-0' : 'w-64'}
+            relative flex-shrink-0 border-r bg-white transition-all duration-300 ease-in-out overflow-hidden
+            ${leftSidebarCollapsed ? 'w-0' : 'w-80'}
           `}
         >
           <div 
@@ -187,7 +227,7 @@ export default function ChatPage() {
           <AnimatePresence>
             {!leftSidebarCollapsed && (
               <motion.div 
-                className="p-4"
+                className="h-full overflow-y-auto p-4"
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -10 }}
@@ -223,68 +263,79 @@ export default function ChatPage() {
           </AnimatePresence>
         </aside>
         
-        {/* Main Chat Area */}
+        {/* Space between left sidebar and main content */}
+        <div className="flex-shrink-0 w-8"></div>
+        
+        {/* Main Chat Area - Fixed height with internal scrolling */}
         <motion.main 
-          className={`flex-1 bg-white ${leftSidebarCollapsed && rightSidebarCollapsed ? 'px-4' : ''}`}
+          className={`flex-1 flex flex-col bg-white ${leftSidebarCollapsed && rightSidebarCollapsed ? 'px-6' : 'px-2'} overflow-hidden`}
           layout
           transition={{ type: "spring", stiffness: 400, damping: 30 }}
         >
-          <div className="flex h-full flex-col">
-            {/* Chat messages */}
+          <div className="flex flex-col h-full">
+            {/* Chat messages - This div scrolls */}
             <div className="flex-1 overflow-y-auto p-4">
-              {/* Bot message */}
-              <motion.div 
-                className="mb-6 flex"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3 }}
-              >
-                <div className="mr-3 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-900 text-white">
-                  <User className="h-6 w-6" />
-                </div>
-                <div className={`max-w-3xl rounded-lg bg-blue-900 p-4 text-white ${leftSidebarCollapsed && rightSidebarCollapsed ? 'max-w-2xl' : ''}`}>
-                  <p>Hello Sarah! I'm your UWI-GPT advisor. How can I assist you today with your academic journey?</p>
-                </div>
-              </motion.div>
-              
-              {/* User message */}
-              <motion.div 
-                className="mb-6 flex justify-end"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1, duration: 0.3 }}
-              >
-                <div className={`max-w-3xl rounded-lg bg-gray-100 p-4 text-gray-800 ${leftSidebarCollapsed && rightSidebarCollapsed ? 'max-w-2xl' : ''}`}>
-                  <p>Hi! I need help with my course selection for next semester.</p>
-                </div>
-                <div className="ml-3">
-                  <Avatar>
-                    <AvatarImage src="/avatar.png" alt="Sarah Johnson" />
-                    <AvatarFallback>SJ</AvatarFallback>
-                  </Avatar>
-                </div>
-              </motion.div>
-              
-              {/* Typing indicator */}
-              <motion.div 
-                className="flex"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.2, duration: 0.3 }}
-              >
-                <div className="mr-3 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-900 text-white">
-                  <User className="h-6 w-6" />
-                </div>
-                <div className="flex space-x-1 rounded-lg bg-gray-200 px-4 py-2">
-                  <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '0ms' }}></div>
-                  <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '200ms' }}></div>
-                  <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '400ms' }}></div>
-                </div>
-              </motion.div>
+              <div className="space-y-6">
+                {messages.map((msg, index) => (
+                  <motion.div 
+                    key={msg.id}
+                    className={`flex ${msg.sender === 'user' ? 'justify-end' : ''}`}
+                    custom={index}
+                    initial="hidden"
+                    animate="visible"
+                    variants={chatItemVariants}
+                  >
+                    {msg.sender === 'bot' && (
+                      <div className="mr-3 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-900 text-white">
+                        <User className="h-6 w-6" />
+                      </div>
+                    )}
+                    
+                    <div className={`max-w-3xl rounded-lg ${msg.sender === 'user' 
+                      ? 'bg-gray-100 p-4 text-gray-800' 
+                      : 'bg-blue-900 p-4 text-white'} 
+                      ${leftSidebarCollapsed && rightSidebarCollapsed ? 'max-w-2xl' : ''}`}
+                    >
+                      <MessageContent content={msg.content} sender={msg.sender} />
+                    </div>
+                    
+                    {msg.sender === 'user' && (
+                      <div className="ml-3">
+                        <Avatar>
+                          <AvatarImage src="/avatar.png" alt="Sarah Johnson" />
+                          <AvatarFallback>SJ</AvatarFallback>
+                        </Avatar>
+                      </div>
+                    )}
+                  </motion.div>
+                ))}
+                
+                {/* Typing indicator when loading */}
+                {isLoading && (
+                  <motion.div 
+                    className="flex"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <div className="mr-3 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-900 text-white">
+                      <User className="h-6 w-6" />
+                    </div>
+                    <div className="flex space-x-1 rounded-lg bg-gray-200 px-4 py-2">
+                      <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '0ms' }}></div>
+                      <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '200ms' }}></div>
+                      <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '400ms' }}></div>
+                    </div>
+                  </motion.div>
+                )}
+                
+                {/* Invisible element to scroll to */}
+                <div ref={messagesEndRef} />
+              </div>
             </div>
             
-            {/* Message input */}
-            <div className="border-t p-4">
+            {/* Message input - Fixed at bottom */}
+            <div className="flex-shrink-0 border-t p-4 bg-white">
               <div className="flex items-center gap-2">
                 <Button
                   variant="ghost"
@@ -295,14 +346,18 @@ export default function ChatPage() {
                 </Button>
                 
                 <Input
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  onKeyDown={handleKeyPress}
                   placeholder="Type your message here..."
                   className="flex-1 rounded-full border-gray-300"
+                  disabled={isLoading}
                 />
                 
                 <Button
                   className="rounded-full bg-red-600 hover:bg-red-700"
+                  onClick={sendMessage}
+                  disabled={isLoading || !inputMessage.trim()}
                 >
                   <Send className="mr-1 h-4 w-4" />
                   Send
@@ -312,11 +367,14 @@ export default function ChatPage() {
           </div>
         </motion.main>
         
+        {/* Space between main content and right sidebar */}
+        <div className="flex-shrink-0 w-8"></div>
+        
         {/* Right Sidebar - Resources */}
         <aside 
           className={`
-            relative border-l bg-white transition-all duration-300 ease-in-out
-            ${rightSidebarCollapsed ? 'w-0' : 'w-64'}
+            relative flex-shrink-0 border-l bg-white transition-all duration-300 ease-in-out overflow-hidden
+            ${rightSidebarCollapsed ? 'w-0' : 'w-80'}
           `}
         >
           <div 
@@ -341,7 +399,7 @@ export default function ChatPage() {
           <AnimatePresence>
             {!rightSidebarCollapsed && (
               <motion.div 
-                className="p-4"
+                className="h-full overflow-y-auto p-4"
                 initial={{ opacity: 0, x: 10 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: 10 }}
@@ -373,5 +431,14 @@ export default function ChatPage() {
         </aside>
       </div>
     </motion.div>
-  )
+  );
+};
+
+// Wrap with Redux Provider for state management
+export default function ChatPage() {
+  return (
+    <Provider store={store}>
+      <ChatPageContent />
+    </Provider>
+  );
 }

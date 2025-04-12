@@ -33,3 +33,4 @@ chroma_db_bilingual/
 # ---- IDE config ----
 .vscode/
 .idea/
+node_modules/
