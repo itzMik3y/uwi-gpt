@@ -4,8 +4,18 @@
 import { MessageSquare, Calendar, FileText, GraduationCap, BookOpen } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Layout } from "@/app/components/layout/Layout"
+import { useSelector } from "react-redux"
+import { RootState } from "@/store"
 
 export default function Dashboard() {
+  // Get user from Redux store
+  const user = useSelector((state: RootState) => state.auth.user);
+  
+  // Parse first name from full name
+  const fullName = user?.name || "User";
+  // Split by space and take the first part as the first name
+  const firstName = fullName.split(' ')[0];
+  
   // Format current date
   const currentDate = new Date()
   const options: Intl.DateTimeFormatOptions = {
@@ -28,7 +38,7 @@ export default function Dashboard() {
     <Layout>
       {/* Welcome banner */}
       <div className="bg-blue-600 p-8 text-white">
-        <h1 className="mb-1 text-3xl font-bold">Welcome back, Sarah!</h1>
+        <h1 className="mb-1 text-3xl font-bold">Welcome back, {firstName}!</h1>
         <p className="mb-1">{formattedDate} | {formattedTime}</p>
         <p className="italic">"Excellence is not a skill. It's an attitude."</p>
       </div>
