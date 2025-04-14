@@ -209,37 +209,50 @@ def initialize_ollama_llm():
 
 def switch_llm_backend(backend: str, api_key: Optional[str] = None):
     """Switch the LLM backend between Ollama and Gemini"""
-    global llm, selected_llm_backend
-    
+    global llm, selected_llm_backend # Referencing global variables
+
+    # --- Import LLM classes (Better at top level, but shown here if needed) ---
+    # It's generally better to put these imports at the top of the file
+    try:
+        from .llm_classes import OllamaLLM, GeminiLLM
+    except ImportError as e:
+        logger.error(f"Failed to import LLM classes: {e}")
+        raise ValueError(f"Internal server error: Could not load LLM classes.") from e
+    # --- End Imports ---
+
     if backend not in ["ollama", "gemini"]:
         raise ValueError("Invalid backend. Must be 'ollama' or 'gemini'.")
-    
+
     if backend == "gemini":
         # Use provided API key or get from environment
-        api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
-        
-        # Explicit check for empty API key
-        if not api_key or api_key.strip() == "":
+        # Ensure api_key from argument takes precedence if it's a valid string
+        effective_api_key = api_key if api_key and api_key.strip() else os.environ.get("GEMINI_API_KEY")
+
+        # Explicit check for empty API key after checking both sources
+        if not effective_api_key or not effective_api_key.strip():
+            logger.warning("Gemini API key not found in request or environment variable GEMINI_API_KEY.")
             raise ValueError("Gemini API key not provided. Please provide an API key in the request or set the GEMINI_API_KEY environment variable.")
-            
+
         # Initialize Gemini LLM with the API key
         try:
-            from .llm_classes import GeminiLLM
-            llm = GeminiLLM(api_key=api_key, temperature=0.0)
+            # Pass the validated key
+            llm = GeminiLLM(api_key=effective_api_key, temperature=0.0)
             selected_llm_backend = "gemini"
-            
-            # Store API key in environment variable for future use
-            if api_key:
-                os.environ["GEMINI_API_KEY"] = api_key
-                
+            logger.info(f"Switched LLM to Gemini.")
+            # REMOVED: os.environ["GEMINI_API_KEY"] = effective_api_key # Unnecessary and potentially problematic
             return "gemini"
         except Exception as e:
-            raise ValueError(f"Failed to initialize Gemini LLM: {str(e)}")
-    else:
-        from .llm_classes import OllamaLLM
-        llm = OllamaLLM(model_name="gemma3:12b", temperature=0.0)
-        selected_llm_backend = "ollama"
-        return "ollama"
+            logger.error(f"Failed to initialize Gemini LLM: {e}", exc_info=True)
+            raise ValueError(f"Failed to initialize Gemini LLM: {e}") from e # Propagate specific error
+    else: # backend == "ollama"
+        try:
+            llm = OllamaLLM(model_name="gemma3:12b", temperature=0.0)
+            selected_llm_backend = "ollama"
+            logger.info(f"Switched LLM to Ollama.")
+            return "ollama"
+        except Exception as e:
+            logger.error(f"Failed to initialize Ollama LLM: {e}", exc_info=True)
+            raise ValueError(f"Failed to initialize Ollama LLM: {e}") from e # Propagate specific error
 
 def get_model_info():
     """Get information about the currently selected model"""

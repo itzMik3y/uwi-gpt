@@ -16,7 +16,8 @@ class QueryResponse(BaseModel):
     processing_time: float
     context: str
 
+# rag_api/models.py
 class SwitchLLMRequest(BaseModel):
     """Model for switching the LLM backend"""
     backend: str  # "ollama" or "gemini"
-    api_key: Optional[str] = None  # Optional API key for Gemini
+    # api_key: Optional[str] = None # REMOVE THIS LINE
