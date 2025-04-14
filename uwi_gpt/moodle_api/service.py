@@ -3,9 +3,9 @@ import os
 import re
 import json
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from fastapi import HTTPException
-from .models import MoodleCredentials  # Relative import
+from .models import MoodleCredentials, SASCredentials  # Relative import
 import traceback  # Import traceback for detailed logging
 
 # Define URLs

@@ -1,8 +1,8 @@
 # moodle_api/router.py
 import logging
 from fastapi import APIRouter, HTTPException, Depends
-from .models import MoodleCredentials
-from .service import fetch_moodle_details
+from .models import MoodleCredentials, SASCredentials
+from .service import fetch_moodle_details, fetch_uwi_sas_details
 
 # Optional: configure a logger specific to this module
 logger = logging.getLogger(__name__)
