@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Import routers from the modules
 from moodle_api.router import router as moodle_router
 from rag_api.router import router as rag_router
-
+from contextlib import asynccontextmanager
 # Import the startup function from the RAG module
 from rag_api import initialize_rag_resources
 
@@ -26,14 +26,36 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Create the main FastAPI app instance
+
+
+
+# --- Startup Event ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic: Code here runs before the application starts receiving requests
+    logger.info("API starting up (using lifespan)...")
+    try:
+        initialize_rag_resources()  # Call the RAG resource initializer
+        logger.info("API startup complete. RAG resources initialized.")
+    except Exception as e:
+        # Log any errors during initialization
+        logger.error(f"Fatal error during RAG initialization: {e}", exc_info=True)
+        # Depending on the severity, you might raise the exception
+        # to prevent the app from starting if initialization fails.
+        # raise # Uncomment to stop app on initialization failure
+
+    yield # The application runs while yielded
+
+    # Shutdown logic: Code here runs after the application stops receiving requests
+    logger.info("API shutting down...")
+
 app = FastAPI(
     title="Combined University API",
     description="Provides access to Moodle data and a RAG-based QA system.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan  # Add the lifespan handler here
 )
 
-# --- Configure CORS ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://localhost:3001"],  # Add your frontend URLs
@@ -42,13 +64,6 @@ app.add_middleware(
     allow_headers=["*"],  # Allow all headers
 )
 logger.info("CORS middleware added to allow cross-origin requests")
-
-# --- Startup Event ---
-@app.on_event("startup")
-async def startup_event():
-    logger.info("API starting up...")
-    initialize_rag_resources()  # Call the RAG resource initializer
-    logger.info("API startup complete. RAG resources initialized.")
 
 # --- Include Routers ---
 logger.info("Including API routers...")

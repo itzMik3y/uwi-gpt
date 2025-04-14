@@ -527,7 +527,7 @@ async def query_endpoint(request: QueryRequest):
             # Use invoke for LangChain interface consistency if applicable
             # answer = llm.invoke(prompt_str)
             # If using older callable interface:
-            answer = llm(prompt_str)
+            answer = llm.invoke(prompt_str)
         except Exception as e:
              logger.error(f"Error calling LLM: {e}", exc_info=True)
              raise HTTPException(status_code=503, detail=f"LLM service generated an error: {e}")
