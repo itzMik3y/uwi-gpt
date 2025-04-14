@@ -16,7 +16,8 @@ import {
   FileText,
   School,
   User,
-  ChevronRight as ArrowRight
+  ChevronRight as ArrowRight,
+  Sparkles
 } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -25,10 +26,11 @@ import { Header } from "@/app/components/layout/Header"
 import { HorizontalNav } from "@/app/components/layout/HorizonatalNav"
 import { motion, AnimatePresence } from "framer-motion"
 import { useChat } from "@/app/hooks/useChat"
-import { Provider } from "react-redux"
+import { Provider, useSelector,useDispatch } from "react-redux"
 import { store } from "@/store/index"
+import { RootState } from "@/store"
 import ReactMarkdown from "react-markdown"
-
+import { addBotMessage } from "@/store/slices/chatSlice"
 // Define interface for nav items
 interface NavItem {
   label: string;
@@ -69,7 +71,15 @@ const chatItemVariants = {
 };
 
 // Message component that handles markdown rendering for bot messages
-const MessageContent = ({ content, sender }: { content: string, sender: 'user' | 'bot' }) => {
+const MessageContent = ({ 
+  content, 
+  sender, 
+  isStreaming 
+}: { 
+  content: string, 
+  sender: 'user' | 'bot',
+  isStreaming?: boolean 
+}) => {
   if (sender === 'user') {
     return <p>{content}</p>;
   }
@@ -79,6 +89,13 @@ const MessageContent = ({ content, sender }: { content: string, sender: 'user' |
       <ReactMarkdown>
         {content}
       </ReactMarkdown>
+      {isStreaming && (
+        <div className="inline-flex space-x-1 mt-1">
+          <div className="h-2 w-2 animate-bounce rounded-full bg-white" style={{ animationDelay: '0ms' }}></div>
+          <div className="h-2 w-2 animate-bounce rounded-full bg-white" style={{ animationDelay: '200ms' }}></div>
+          <div className="h-2 w-2 animate-bounce rounded-full bg-white" style={{ animationDelay: '400ms' }}></div>
+        </div>
+      )}
     </div>
   );
 };
@@ -89,16 +106,72 @@ const ChatPageContent = () => {
   const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(false)
   const pathname = usePathname()
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const dispatch = useDispatch();
   
-  // Use our custom hook for chat functionality
-  const { messages, isLoading, inputMessage, setInputMessage, sendMessage } = useChat();
+  // Get user from Redux store
+  const user = useSelector((state: RootState) => state.auth.user);
   
-  // Auto-scroll to bottom when new messages arrive
+  // Get full name and create initials
+  const fullName = user?.name || "User";
+  
+  // Create initials for avatar fallback
+  const getInitials = (name: string) => {
+    const names = name.split(' ');
+    if (names.length >= 2) {
+      return `${names[0][0]}${names[1][0]}`.toUpperCase();
+    }
+    return name.substring(0, 2).toUpperCase();
+  };
+  
+  const userInitials = getInitials(fullName);
+  
+  // Use our custom hook for chat functionality with streaming
+  const { 
+    messages, 
+    isLoading, 
+    isStreaming, 
+    error, 
+    inputMessage, 
+    setInputMessage, 
+    sendMessage,
+    useStreaming,
+    toggleStreaming
+  } = useChat();
+  
+  const hasDispatchedWelcomeRef = useRef(false);
+
+  useEffect(() => {
+    // Bail out if there's already messages or we don't have a user yet
+    if (!user || messages.length > 0 || hasDispatchedWelcomeRef.current) return;
+
+    // Extract first name
+    const firstName = user.name?.split(" ")[0] ?? "User";
+
+    // Define multiple greeting templates
+    const greetingTemplates = [
+      (name: string) => `Welcome ${name}, how can I help you?`,
+      (name: string) => `Hello ${name}, how may I assist you today?`,
+      (name: string) => `Hey ${name}! How's it going?`,
+      (name: string) => `Hi ${name}, any questions on your mind?`,
+      (name: string) => `Greetings ${name}! What's up?`
+    ];
+
+    // Pick a random greeting
+    const randomIndex = Math.floor(Math.random() * greetingTemplates.length);
+    const greetingMessage = greetingTemplates[randomIndex](firstName);
+
+    // Dispatch once
+    dispatch(addBotMessage(greetingMessage));
+    hasDispatchedWelcomeRef.current = true;
+  }, [user, messages, dispatch]);
+
+  
+  // Auto-scroll to bottom when new messages arrive or during streaming
   useEffect(() => {
     if (messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages]);
+  }, [messages, isStreaming]);
   
   // Handle pressing Enter key
   const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -276,42 +349,52 @@ const ChatPageContent = () => {
             {/* Chat messages - This div scrolls */}
             <div className="flex-1 overflow-y-auto p-4">
               <div className="space-y-6">
-                {messages.map((msg, index) => (
-                  <motion.div 
-                    key={msg.id}
-                    className={`flex ${msg.sender === 'user' ? 'justify-end' : ''}`}
-                    custom={index}
-                    initial="hidden"
-                    animate="visible"
-                    variants={chatItemVariants}
-                  >
-                    {msg.sender === 'bot' && (
-                      <div className="mr-3 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-900 text-white">
-                        <User className="h-6 w-6" />
-                      </div>
-                    )}
-                    
-                    <div className={`max-w-3xl rounded-lg ${msg.sender === 'user' 
-                      ? 'bg-gray-100 p-4 text-gray-800' 
-                      : 'bg-blue-900 p-4 text-white'} 
-                      ${leftSidebarCollapsed && rightSidebarCollapsed ? 'max-w-2xl' : ''}`}
+                {messages.map((msg, index) => {
+                  // Determine if this is the last bot message and is currently streaming
+                  const isLastBotMessage = msg.sender === 'bot' && index === messages.length - 1;
+                  const isCurrentlyStreaming = isLastBotMessage && isStreaming;
+                  
+                  return (
+                    <motion.div 
+                      key={msg.id}
+                      className={`flex ${msg.sender === 'user' ? 'justify-end' : ''}`}
+                      custom={index}
+                      initial="hidden"
+                      animate="visible"
+                      variants={chatItemVariants}
                     >
-                      <MessageContent content={msg.content} sender={msg.sender} />
-                    </div>
-                    
-                    {msg.sender === 'user' && (
-                      <div className="ml-3">
-                        <Avatar>
-                          <AvatarImage src="/avatar.png" alt="Sarah Johnson" />
-                          <AvatarFallback>SJ</AvatarFallback>
-                        </Avatar>
+                      {msg.sender === 'bot' && (
+                        <div className="mr-3 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-900 text-white">
+                          <User className="h-6 w-6" />
+                        </div>
+                      )}
+                      
+                      <div className={`max-w-3xl rounded-lg ${msg.sender === 'user' 
+                        ? 'bg-gray-100 p-4 text-gray-800' 
+                        : 'bg-blue-900 p-4 text-white'} 
+                        ${leftSidebarCollapsed && rightSidebarCollapsed ? 'max-w-2xl' : ''}`}
+                      >
+                        <MessageContent 
+                          content={msg.content} 
+                          sender={msg.sender} 
+                          isStreaming={isCurrentlyStreaming}
+                        />
                       </div>
-                    )}
-                  </motion.div>
-                ))}
+                      
+                      {msg.sender === 'user' && (
+                        <div className="ml-3">
+                          <Avatar>
+                            <AvatarImage src="/avatar.png" alt={fullName} />
+                            <AvatarFallback>{userInitials}</AvatarFallback>
+                          </Avatar>
+                        </div>
+                      )}
+                    </motion.div>
+                  );
+                })}
                 
-                {/* Typing indicator when loading */}
-                {isLoading && (
+                {/* Only show the typing indicator for non-streaming loading */}
+                {isLoading && !isStreaming && (
                   <motion.div 
                     className="flex"
                     initial={{ opacity: 0, y: 20 }}
@@ -321,10 +404,28 @@ const ChatPageContent = () => {
                     <div className="mr-3 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-900 text-white">
                       <User className="h-6 w-6" />
                     </div>
-                    <div className="flex space-x-1 rounded-lg bg-gray-200 px-4 py-2">
-                      <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '0ms' }}></div>
-                      <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '200ms' }}></div>
-                      <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '400ms' }}></div>
+                    <div className="flex space-x-1 rounded-lg bg-blue-900 px-4 py-2">
+                      <div className="h-2 w-2 animate-bounce rounded-full bg-white" style={{ animationDelay: '0ms' }}></div>
+                      <div className="h-2 w-2 animate-bounce rounded-full bg-white" style={{ animationDelay: '200ms' }}></div>
+                      <div className="h-2 w-2 animate-bounce rounded-full bg-white" style={{ animationDelay: '400ms' }}></div>
+                    </div>
+                  </motion.div>
+                )}
+                
+                {/* Show error message if any */}
+                {error && (
+                  <motion.div 
+                    className="flex"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <div className="mr-3 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-red-600 text-white">
+                      <User className="h-6 w-6" />
+                    </div>
+                    <div className="rounded-lg bg-red-100 p-4 text-red-700 max-w-3xl">
+                      <p className="font-medium">Error</p>
+                      <p>{error}</p>
                     </div>
                   </motion.div>
                 )}
@@ -337,6 +438,17 @@ const ChatPageContent = () => {
             {/* Message input - Fixed at bottom */}
             <div className="flex-shrink-0 border-t p-4 bg-white">
               <div className="flex items-center gap-2">
+                {/* Streaming toggle button */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-gray-500 hover:bg-gray-100"
+                  onClick={toggleStreaming}
+                  title={useStreaming ? "Turn off streaming" : "Turn on streaming"}
+                >
+                  <Sparkles className={`h-5 w-5 ${useStreaming ? 'text-yellow-500' : 'text-gray-400'}`} />
+                </Button>
+                
                 <Button
                   variant="ghost"
                   size="icon"
@@ -351,13 +463,13 @@ const ChatPageContent = () => {
                   onKeyDown={handleKeyPress}
                   placeholder="Type your message here..."
                   className="flex-1 rounded-full border-gray-300"
-                  disabled={isLoading}
+                  disabled={isLoading || isStreaming}
                 />
                 
                 <Button
                   className="rounded-full bg-red-600 hover:bg-red-700"
                   onClick={sendMessage}
-                  disabled={isLoading || !inputMessage.trim()}
+                  disabled={isLoading || isStreaming || !inputMessage.trim()}
                 >
                   <Send className="mr-1 h-4 w-4" />
                   Send

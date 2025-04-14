@@ -1,6 +1,7 @@
 // app/dashboard/page.tsx
 "use client"
 
+import Link from "next/link"
 import { MessageSquare, Calendar, FileText, GraduationCap, BookOpen } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Layout } from "@/app/components/layout/Layout"
@@ -45,22 +46,33 @@ export default function Dashboard() {
       
       {/* Quick actions */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 p-4">
-        <Card className="flex flex-col items-center p-4 text-center hover:shadow-md cursor-pointer transition-all">
-          <MessageSquare className="mb-2 h-8 w-8 text-blue-500" />
-          <p className="font-medium">Chat with Advisor</p>
-        </Card>
-        <Card className="flex flex-col items-center p-4 text-center hover:shadow-md cursor-pointer transition-all">
-          <Calendar className="mb-2 h-8 w-8 text-blue-500" />
-          <p className="font-medium">Schedule Meeting</p>
-        </Card>
-        <Card className="flex flex-col items-center p-4 text-center hover:shadow-md cursor-pointer transition-all">
-          <FileText className="mb-2 h-8 w-8 text-blue-500" />
-          <p className="font-medium">View Reports</p>
-        </Card>
-        <Card className="flex flex-col items-center p-4 text-center hover:shadow-md cursor-pointer transition-all">
-          <GraduationCap className="mb-2 h-8 w-8 text-blue-500" />
-          <p className="font-medium">Academic Plan</p>
-        </Card>
+        <Link href="/chat">
+          <Card className="flex flex-col items-center p-4 text-center hover:shadow-md hover:bg-gray-50 cursor-pointer transition-all h-full">
+            <MessageSquare className="mb-2 h-8 w-8 text-blue-500" />
+            <p className="font-medium">Chat with Advisor</p>
+          </Card>
+        </Link>
+        
+        <Link href="/schedule">
+          <Card className="flex flex-col items-center p-4 text-center hover:shadow-md hover:bg-gray-50 cursor-pointer transition-all h-full">
+            <Calendar className="mb-2 h-8 w-8 text-blue-500" />
+            <p className="font-medium">Schedule Meeting</p>
+          </Card>
+        </Link>
+        
+        <Link href="/reports">
+          <Card className="flex flex-col items-center p-4 text-center hover:shadow-md hover:bg-gray-50 cursor-pointer transition-all h-full">
+            <FileText className="mb-2 h-8 w-8 text-blue-500" />
+            <p className="font-medium">View Reports</p>
+          </Card>
+        </Link>
+        
+        <Link href="/academic-plan">
+          <Card className="flex flex-col items-center p-4 text-center hover:shadow-md hover:bg-gray-50 cursor-pointer transition-all h-full">
+            <GraduationCap className="mb-2 h-8 w-8 text-blue-500" />
+            <p className="font-medium">Academic Plan</p>
+          </Card>
+        </Link>
       </div>
       
       {/* Recent updates */}
