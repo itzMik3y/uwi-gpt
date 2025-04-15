@@ -2,7 +2,7 @@
 "use client"
 
 import Link from "next/link"
-import { MessageSquare, Calendar, FileText, GraduationCap, BookOpen } from "lucide-react"
+import { MessageSquare, Calendar, FileText, GraduationCap, BookOpen, Clock, ChevronRight } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Layout } from "@/app/components/layout/Layout"
 import { useSelector } from "react-redux"
@@ -11,6 +11,9 @@ import { RootState } from "@/store"
 export default function Dashboard() {
   // Get user from Redux store
   const user = useSelector((state: RootState) => state.auth.user);
+  
+  // Get courses from Redux store
+  const courses = useSelector((state: RootState) => state.auth.courses) || [];
   
   // Parse first name from full name
   const fullName = user?.name || "User";
@@ -73,6 +76,159 @@ export default function Dashboard() {
             <p className="font-medium">Academic Plan</p>
           </Card>
         </Link>
+      </div>
+      
+      {/* Current Courses */}
+      <div className="bg-gray-50 py-4 px-6">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-semibold">Current Courses</h2>
+          <Link href="/courses" className="text-blue-600 text-sm flex items-center">
+            View All <ChevronRight className="h-4 w-4 ml-1" />
+          </Link>
+        </div>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {courses.slice(0, 3).map((course) => (
+            <div key={course.id} className="bg-white rounded-lg shadow">
+              <div className="p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-3">
+                    <div className={`${course.id === 1 ? 'bg-blue-100' : 'bg-purple-100'} rounded-md p-2 flex items-center justify-center h-10 w-10`}>
+                      {course.id === 1 ? 
+                        <div className="text-blue-500 text-lg">JS</div> : 
+                        <div className="text-purple-500 text-lg">M</div>
+                      }
+                    </div>
+                    <div>
+                      <h3 className="font-medium text-base">{course.shortname || (course.id === 1 ? "COMP3385" : "MATH2410")}</h3>
+                      <p className="text-sm text-gray-600">
+                        {course.fullname}
+                      </p>
+                    </div>
+                  </div>
+                  <div>
+                    <span className="inline-block bg-green-100 text-green-600 text-xs px-3 py-1 rounded-full">In Progress</span>
+                  </div>
+                </div>
+                
+                <div className="flex text-xs text-gray-500 mb-3 mt-3">
+                  <div className="flex items-center mr-4">
+                    <Clock className="h-4 w-4 mr-1 text-gray-400" />
+                    <span>{course.id === 1 ? "Mon, Wed 10:00 AM" : "Thu, Fri 2:00 PM"}</span>
+                  </div>
+                  <div className="flex items-center">
+                    <GraduationCap className="h-4 w-4 mr-1 text-gray-400" />
+                    <span>{course.id === 1 ? "Dr. Smith" : "Dr. Johnson"}</span>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="border-t border-gray-100 px-4 py-3">
+                <div className="flex justify-between items-center text-sm mb-2">
+                  <div className="font-medium">Progress: {course.progress || (course.id === 1 ? "85" : "75")}%</div>
+                  <div className="font-medium">Grade: {course.id === 1 ? "A-" : "B+"}</div>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-1.5">
+                  <div 
+                    className={course.id === 1 ? "bg-blue-500 h-1.5 rounded-full" : "bg-purple-500 h-1.5 rounded-full"} 
+                    style={{ width: `${course.progress || (course.id === 1 ? 85 : 75)}%` }}
+                  ></div>
+                </div>
+              </div>
+            </div>
+          ))}
+          
+          {/* If no courses are available from the store, show placeholder courses */}
+          {courses.length === 0 && (
+            <>
+              <div className="bg-white rounded-lg shadow">
+                <div className="p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-3">
+                      <div className="bg-blue-100 rounded-md p-2 flex items-center justify-center h-10 w-10">
+                        <div className="text-blue-500 text-lg">JS</div>
+                      </div>
+                      <div>
+                        <h3 className="font-medium text-base">COMP3385</h3>
+                        <p className="text-sm text-gray-600">Web Development</p>
+                      </div>
+                    </div>
+                    <div>
+                      <span className="inline-block bg-green-100 text-green-600 text-xs px-3 py-1 rounded-full">In Progress</span>
+                    </div>
+                  </div>
+                  
+                  <div className="flex text-xs text-gray-500 mb-3 mt-3">
+                    <div className="flex items-center mr-4">
+                      <Clock className="h-4 w-4 mr-1 text-gray-400" />
+                      <span>Mon, Wed 10:00 AM</span>
+                    </div>
+                    <div className="flex items-center">
+                      <GraduationCap className="h-4 w-4 mr-1 text-gray-400" />
+                      <span>Dr. Smith</span>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="border-t border-gray-100 px-4 py-3">
+                  <div className="flex justify-between items-center text-sm mb-2">
+                    <div className="font-medium">Progress: 85%</div>
+                    <div className="font-medium">Grade: A-</div>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-1.5">
+                    <div 
+                      className="bg-blue-500 h-1.5 rounded-full" 
+                      style={{ width: '85%' }}
+                    ></div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="bg-white rounded-lg shadow">
+                <div className="p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-3">
+                      <div className="bg-purple-100 rounded-md p-2 flex items-center justify-center h-10 w-10">
+                        <div className="text-purple-500 text-lg">M</div>
+                      </div>
+                      <div>
+                        <h3 className="font-medium text-base">MATH2410</h3>
+                        <p className="text-sm text-gray-600">Advanced Calculus</p>
+                      </div>
+                    </div>
+                    <div>
+                      <span className="inline-block bg-green-100 text-green-600 text-xs px-3 py-1 rounded-full">In Progress</span>
+                    </div>
+                  </div>
+                  
+                  <div className="flex text-xs text-gray-500 mb-3 mt-3">
+                    <div className="flex items-center mr-4">
+                      <Clock className="h-4 w-4 mr-1 text-gray-400" />
+                      <span>Thu, Fri 2:00 PM</span>
+                    </div>
+                    <div className="flex items-center">
+                      <GraduationCap className="h-4 w-4 mr-1 text-gray-400" />
+                      <span>Dr. Johnson</span>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="border-t border-gray-100 px-4 py-3">
+                  <div className="flex justify-between items-center text-sm mb-2">
+                    <div className="font-medium">Progress: 75%</div>
+                    <div className="font-medium">Grade: B+</div>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-1.5">
+                    <div 
+                      className="bg-purple-500 h-1.5 rounded-full" 
+                      style={{ width: '75%' }}
+                    ></div>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
       </div>
       
       {/* Recent updates */}

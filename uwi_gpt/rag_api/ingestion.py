@@ -88,7 +88,7 @@ STATE_CACHE_PATH = os.path.join(BASE_DIR, "docs_state.json")
 PDF_CACHE_PATH = os.path.join(BASE_DIR, "pdf_cache.json")
 DOCS_CACHE_PATH = os.path.join(BASE_DIR, "docs_cache.joblib")
 QDRANT_URL = "http://localhost:6333"
-tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-large-en-v1.5")
+tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-m3", device=device)
 
 try:
     import fitz
@@ -681,7 +681,7 @@ def load_existing_qdrant_store(
     
     # Initialize embeddings
     dense_embeddings = HuggingFaceEmbeddings(
-        model_name="BAAI/bge-large-en-v1.5",
+        model_name="BAAI/bge-m3",
         model_kwargs={"trust_remote_code": True, "device": device},
         encode_kwargs={'normalize_embeddings':True}
     )
@@ -807,7 +807,7 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
     
     # 1. Initialize the dense embedding model with OS-specific device settings
     dense_embeddings = HuggingFaceEmbeddings(
-        model_name="BAAI/bge-large-en-v1.5",
+        model_name="BAAI/bge-m3",
         model_kwargs={"trust_remote_code": True, "device": device},
         encode_kwargs={'normalize_embeddings':True}
     )
@@ -913,9 +913,9 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
                 # Use our new unified chunker
                 docs =  improved_document_chunker(
                             documents,
-                            min_chunk_size=300,  # Prevents tiny chunks
-                            chunk_size=500,
-                            chunk_overlap=100
+                            min_chunk_size=500,  # Prevents tiny chunks
+                            chunk_size=1000,
+                            chunk_overlap=200
                         )
                 joblib.dump(docs, docs_cache_path)
     
@@ -930,9 +930,9 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
         # Use our new unified chunker
         docs =  improved_document_chunker(
                     documents,
-                    min_chunk_size=300,  # Prevents tiny chunks
-                    chunk_size=500,
-                    chunk_overlap=100
+                    min_chunk_size=500,  # Prevents tiny chunks
+                    chunk_size=1000,
+                    chunk_overlap=200
                 )
         # Convert to LangChain documents format
         langchain_docs = convert_to_langchain_docs(docs)
