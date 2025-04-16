@@ -7,4 +7,7 @@ services:
       - 6334:6334
     restart: always
     volumes:
+      # Keep this volume for persistent data storage
       - ./qdrant_data:/qdrant/storage
+      # Add this line for snapshots only
+      - ./qdrant_snapshots:/qdrant/snapshots
