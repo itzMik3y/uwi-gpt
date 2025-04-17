@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react"
 import Link from "next/link"
+import Image from "next/image"
 import { usePathname } from "next/navigation"
 import { 
   GraduationCap, 
@@ -16,22 +17,23 @@ import {
   FileText,
   School,
   User,
-  ChevronRight as ArrowRight,
+  Clock,
+  Zap,
+  LightbulbIcon,
   Sparkles
 } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Header } from "@/app/components/layout/Header"
-import { HorizontalNav } from "@/app/components/layout/HorizonatalNav"
 import { motion, AnimatePresence } from "framer-motion"
 import { useChat } from "@/app/hooks/useChat"
-import { Provider, useSelector,useDispatch } from "react-redux"
-import { store } from "@/store/index"
+import { useSelector, useDispatch } from "react-redux"
 import { RootState } from "@/store"
 import ReactMarkdown from "react-markdown"
 import { addBotMessage } from "@/store/slices/chatSlice"
-// Define interface for nav items
+import { Layout } from "../components/layout/Layout"
+
+// Define interface for nav items and quick action items
 interface NavItem {
   label: string;
   icon: React.ReactNode;
@@ -39,23 +41,6 @@ interface NavItem {
   active?: boolean;
   hasArrow?: boolean;
 }
-
-// Animation variants
-const pageVariants = {
-  hidden: { opacity: 0 },
-  visible: { 
-    opacity: 1,
-    transition: {
-      duration: 0.3
-    }
-  },
-  exit: { 
-    opacity: 0,
-    transition: {
-      duration: 0.2
-    }
-  }
-};
 
 // Chat message animation variants
 const chatItemVariants = {
@@ -84,35 +69,42 @@ const MessageContent = ({
     return <p>{content}</p>;
   }
   
+  // Function to check if content is likely HTML
+  const isHtmlContent = (str: string) => {
+    return /<\/?[a-z][\s\S]*>/i.test(str);
+  };
+  
   return (
-    <div className="prose prose-invert max-w-none">
-      <ReactMarkdown>
-        {content}
-      </ReactMarkdown>
+    <div className="prose max-w-none text-gray-800">
+      {isHtmlContent(content) ? (
+        <div dangerouslySetInnerHTML={{ __html: content }} />
+      ) : (
+        <ReactMarkdown>
+          {content}
+        </ReactMarkdown>
+      )}
       {isStreaming && (
         <div className="inline-flex space-x-1 mt-1">
-          <div className="h-2 w-2 animate-bounce rounded-full bg-white" style={{ animationDelay: '0ms' }}></div>
-          <div className="h-2 w-2 animate-bounce rounded-full bg-white" style={{ animationDelay: '200ms' }}></div>
-          <div className="h-2 w-2 animate-bounce rounded-full bg-white" style={{ animationDelay: '400ms' }}></div>
+          <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '0ms' }}></div>
+          <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '200ms' }}></div>
+          <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '400ms' }}></div>
         </div>
       )}
     </div>
   );
 };
 
-// Wrap the page content with Redux Provider
-const ChatPageContent = () => {
-  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false)
-  const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(false)
-  const pathname = usePathname()
+export default function ChatPage() {
+  const [infoSectionCollapsed, setInfoSectionCollapsed] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const chatContainerRef = useRef<HTMLDivElement>(null)
   const dispatch = useDispatch();
   
   // Get user from Redux store
   const user = useSelector((state: RootState) => state.auth.user);
   
   // Get full name and create initials
-  const fullName = user?.name || "User";
+  const fullName = user?.name || "Sarah Johnson";
   
   // Create initials for avatar fallback
   const getInitials = (name: string) => {
@@ -149,11 +141,9 @@ const ChatPageContent = () => {
 
     // Define multiple greeting templates
     const greetingTemplates = [
-      (name: string) => `Welcome ${name}, how can I help you?`,
-      (name: string) => `Hello ${name}, how may I assist you today?`,
-      (name: string) => `Hey ${name}! How's it going?`,
-      (name: string) => `Hi ${name}, any questions on your mind?`,
-      (name: string) => `Greetings ${name}! What's up?`
+      (name: string) => `Hello ${name}! I'm your UWI academic advisor. How can I assist you today?`,
+      (name: string) => `Welcome ${name}, how can I help you with your academic needs?`,
+      (name: string) => `Hi ${name}! How may I help you with your studies today?`,
     ];
 
     // Pick a random greeting
@@ -167,390 +157,407 @@ const ChatPageContent = () => {
 
   
   // Auto-scroll to bottom when new messages arrive or during streaming
+  // But only scroll the chat container, not the whole page
   useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (messagesEndRef.current && chatContainerRef.current) {
+      // Use scrollIntoView only within the container, not the whole page
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
     }
   }, [messages, isStreaming]);
+  
+  // Ensure the chat container is properly sized based on viewport
+  useEffect(() => {
+    const resizeChat = () => {
+      if (chatContainerRef.current) {
+        const viewportHeight = window.innerHeight;
+        const infoSectionHeight = infoSectionCollapsed ? 0 : 180; // Approximate height of info section
+        const inputSectionHeight = 80; // Approximate height of input section
+        const headerHeight = 120; // Estimated header height (adjust as needed)
+        
+        // Calculate available height for chat container
+        const availableHeight = viewportHeight - headerHeight - inputSectionHeight - infoSectionHeight;
+        
+        // Set min-height to ensure it doesn't get too small
+        chatContainerRef.current.style.height = `${Math.max(300, availableHeight)}px`;
+      }
+    };
+    
+    // Initial sizing
+    resizeChat();
+    
+    // Resize on window resize
+    window.addEventListener('resize', resizeChat);
+    
+    // Resize when info section collapses/expands
+    const resizeTimeout = setTimeout(resizeChat, 350); // After animation completes
+    
+    return () => {
+      window.removeEventListener('resize', resizeChat);
+      clearTimeout(resizeTimeout);
+    };
+  }, [infoSectionCollapsed]);
   
   // Handle pressing Enter key
   const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      // Prevent scrolling by stopping event propagation
+      e.stopPropagation();
       sendMessage();
     }
   };
   
   // Quick Actions sidebar items
-  const quickActions: NavItem[] = [
+  const quickActions = [
     { 
-      label: "Course Selection", 
-      icon: <GraduationCap className="h-5 w-5" />, 
-      path: "/course-selection",
-      active: true,
-      hasArrow: false
+      label: "Courses", 
+      icon: <BookOpen className="h-4 w-4" />, 
+      bgColor: "bg-blue-100",
+      textColor: "text-blue-700",
+      hoverColor: "hover:bg-blue-200"
     },
     { 
-      label: "Graduation Planning", 
-      icon: <Calendar className="h-5 w-5" />, 
-      path: "/graduation-planning",
-      hasArrow: false
+      label: "Grades", 
+      icon: <GraduationCap className="h-4 w-4" />, 
+      bgColor: "bg-purple-100",
+      textColor: "text-purple-700",
+      hoverColor: "hover:bg-purple-200"
     },
     { 
-      label: "Mental Wellness", 
-      icon: <Heart className="h-5 w-5" />, 
-      path: "/mental-wellness",
-      hasArrow: false
+      label: "Schedule", 
+      icon: <Calendar className="h-4 w-4" />, 
+      bgColor: "bg-green-100",
+      textColor: "text-green-700",
+      hoverColor: "hover:bg-green-200"
     },
     { 
-      label: "FAQs", 
-      icon: <HelpCircle className="h-5 w-5" />, 
-      path: "/faqs",
-      hasArrow: false
+      label: "Help", 
+      icon: <HelpCircle className="h-4 w-4" />, 
+      bgColor: "bg-amber-100",
+      textColor: "text-amber-700",
+      hoverColor: "hover:bg-amber-200"
     },
   ]
   
-  // Resources sidebar items with arrows
-  const resources: NavItem[] = [
+  // Recent Chats items
+  const recentChats = [
     { 
-      label: "Academic Calendar", 
-      icon: <Calendar className="h-5 w-5" />, 
-      path: "/academic-calendar",
-      hasArrow: true
+      title: "Course Registration Help", 
+      time: "2h ago",
+      active: true
     },
     { 
-      label: "Course Catalog", 
-      icon: <BookOpen className="h-5 w-5" />, 
-      path: "/course-catalog",
-      hasArrow: true 
+      title: "GPA Calculator", 
+      time: "Yesterday",
+      active: false
     },
     { 
-      label: "Degree Requirements", 
-      icon: <FileText className="h-5 w-5" />, 
-      path: "/degree-requirements",
-      hasArrow: true 
-    },
-    { 
-      label: "Student Resources", 
-      icon: <School className="h-5 w-5" />, 
-      path: "/student-resources",
-      hasArrow: true 
+      title: "Exam Schedule", 
+      time: "2d ago",
+      active: false
     },
   ]
+  
+  // Suggested Topics
+  const suggestedTopics = [
+    "Course Prerequisites",
+    "Registration Deadlines",
+    "GPA Calculator"
+  ]
 
-  const toggleLeftSidebar = () => {
-    setLeftSidebarCollapsed(!leftSidebarCollapsed)
+  const toggleInfoSection = () => {
+    setInfoSectionCollapsed(!infoSectionCollapsed)
   }
 
-  const toggleRightSidebar = () => {
-    setRightSidebarCollapsed(!rightSidebarCollapsed)
-  }
-
+  // Add global CSS to hide scrollbars
+  useEffect(() => {
+    // Add CSS to hide scrollbars globally
+    const style = document.createElement('style');
+    style.textContent = `
+      /* Hide scrollbar for Chrome, Safari and Opera */
+      ::-webkit-scrollbar {
+        display: none;
+      }
+      
+      /* Hide scrollbar for IE, Edge and Firefox */
+      * {
+        -ms-overflow-style: none;  /* IE and Edge */
+        scrollbar-width: none;  /* Firefox */
+      }
+    `;
+    document.head.appendChild(style);
+    
+    // Cleanup function
+    return () => {
+      document.head.removeChild(style);
+    };
+  }, []);
+  
   return (
-    <motion.div 
-      className="flex h-screen flex-col bg-white overflow-hidden"
-      variants={pageVariants}
-      initial="hidden"
-      animate="visible"
-      exit="exit"
-    >
-      {/* Header */}
-      <div className="flex-shrink-0">
-        <Header />
-      </div>
-      
-      {/* Horizontal Navbar */}
-      <motion.div 
-        className="flex-shrink-0 bg-gradient-to-b from-blue-600 to-blue-500 px-4 py-2"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.3 }}
-      >
-        <HorizontalNav />
-      </motion.div>
-      
-      {/* Main content area with fixed height */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left Sidebar - Quick Actions */}
-        <aside 
-          className={`
-            relative flex-shrink-0 border-r bg-white transition-all duration-300 ease-in-out overflow-hidden
-            ${leftSidebarCollapsed ? 'w-0' : 'w-80'}
-          `}
+    <Layout>
+    <div className="container mx-auto py-4 px-2">
+      {/* Main Chat Area with Border and Shadow */}
+      <div className="bg-white rounded-lg shadow-sm flex flex-col h-[calc(100vh-120px)] max-h-[calc(100vh-120px)] overflow-hidden">
+        {/* Chat messages - This div scrolls */}
+        <div 
+          ref={chatContainerRef}
+          className="flex-1 overflow-y-auto px-6 py-4 scroll-smooth" 
+          style={{ 
+            scrollbarWidth: 'none', 
+            overscrollBehavior: 'contain',
+            msOverflowStyle: 'none'
+          }}
         >
-          <div 
-            className="absolute -right-6 top-4 z-10"
-          >
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-200 bg-white shadow-sm hover:bg-gray-100"
-              onClick={toggleLeftSidebar}
-              aria-label={leftSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            >
-              <motion.div
-                animate={{ rotate: leftSidebarCollapsed ? 0 : 180 }}
-                transition={{ duration: 0.3 }}
-              >
-                {leftSidebarCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-              </motion.div>
-            </Button>
-          </div>
-          
-          <AnimatePresence>
-            {!leftSidebarCollapsed && (
-              <motion.div 
-                className="h-full overflow-y-auto p-4"
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -10 }}
-                transition={{ duration: 0.2 }}
-              >
-                <h2 className="mb-4 font-semibold">Quick Actions</h2>
-                <nav className="space-y-2">
-                  {quickActions.map((item, index) => (
-                    <motion.div
-                      key={item.path}
-                      initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: index * 0.05, duration: 0.2 }}
-                    >
-                      <Link
-                        href={item.path}
-                        className={`
-                          flex items-center gap-3 rounded-lg p-3 transition-colors
-                          ${item.active 
-                            ? "bg-yellow-400 text-black font-medium" 
-                            : "bg-gray-100 text-gray-700 hover:bg-gray-200"}
-                        `}
-                      >
-                        {item.icon}
-                        <span className="flex-1">{item.label}</span>
-                        {item.hasArrow && <ArrowRight className="h-4 w-4" />}
-                      </Link>
-                    </motion.div>
-                  ))}
-                </nav>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </aside>
-        
-        {/* Space between left sidebar and main content */}
-        <div className="flex-shrink-0 w-8"></div>
-        
-        {/* Main Chat Area - Fixed height with internal scrolling */}
-        <motion.main 
-          className={`flex-1 flex flex-col bg-white ${leftSidebarCollapsed && rightSidebarCollapsed ? 'px-6' : 'px-2'} overflow-hidden`}
-          layout
-          transition={{ type: "spring", stiffness: 400, damping: 30 }}
-        >
-          <div className="flex flex-col h-full">
-            {/* Chat messages - This div scrolls */}
-            <div className="flex-1 overflow-y-auto p-4">
-              <div className="space-y-6">
-                {messages.map((msg, index) => {
-                  // Determine if this is the last bot message and is currently streaming
-                  const isLastBotMessage = msg.sender === 'bot' && index === messages.length - 1;
-                  const isCurrentlyStreaming = isLastBotMessage && isStreaming;
-                  
-                  return (
-                    <motion.div 
-                      key={msg.id}
-                      className={`flex ${msg.sender === 'user' ? 'justify-end' : ''}`}
-                      custom={index}
-                      initial="hidden"
-                      animate="visible"
-                      variants={chatItemVariants}
-                    >
-                      {msg.sender === 'bot' && (
-                        <div className="mr-3 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-900 text-white">
-                          <User className="h-6 w-6" />
-                        </div>
-                      )}
-                      
-                      <div className={`max-w-3xl rounded-lg ${msg.sender === 'user' 
-                        ? 'bg-gray-100 p-4 text-gray-800' 
-                        : 'bg-blue-900 p-4 text-white'} 
-                        ${leftSidebarCollapsed && rightSidebarCollapsed ? 'max-w-2xl' : ''}`}
-                      >
+          <div className="space-y-4 min-h-full">
+            {messages.map((msg, index) => {
+              // Determine if this is the last bot message and is currently streaming
+              const isLastBotMessage = msg.sender === 'bot' && index === messages.length - 1;
+              const isCurrentlyStreaming = isLastBotMessage && isStreaming;
+              
+              return (
+                <motion.div 
+                  key={msg.id}
+                  className={`flex items-start ${msg.sender === 'user' ? 'justify-end' : 'justify-start'} w-full`}
+                  custom={index}
+                  initial="hidden"
+                  animate="visible"
+                  variants={chatItemVariants}
+                >
+                  {msg.sender === 'bot' ? (
+                    <>
+                      <div className="flex-shrink-0 mr-2">
+                        <Image 
+                          src="/uwi-logo.png" 
+                          alt="UWI-GPT" 
+                          width={32} 
+                          height={32} 
+                          className="w-8 h-8"
+                        />
+                      </div>
+                      <div className="bg-blue-50 text-gray-800 rounded-2xl rounded-tl-none p-4 max-w-[70%]">
                         <MessageContent 
                           content={msg.content} 
                           sender={msg.sender} 
                           isStreaming={isCurrentlyStreaming}
                         />
                       </div>
-                      
-                      {msg.sender === 'user' && (
-                        <div className="ml-3">
-                          <Avatar>
-                            <AvatarImage src="/avatar.png" alt={fullName} />
-                            <AvatarFallback>{userInitials}</AvatarFallback>
-                          </Avatar>
-                        </div>
-                      )}
-                    </motion.div>
-                  );
-                })}
-                
-                {/* Only show the typing indicator for non-streaming loading */}
-                {isLoading && !isStreaming && (
-                  <motion.div 
-                    className="flex"
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <div className="mr-3 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-900 text-white">
-                      <User className="h-6 w-6" />
-                    </div>
-                    <div className="flex space-x-1 rounded-lg bg-blue-900 px-4 py-2">
-                      <div className="h-2 w-2 animate-bounce rounded-full bg-white" style={{ animationDelay: '0ms' }}></div>
-                      <div className="h-2 w-2 animate-bounce rounded-full bg-white" style={{ animationDelay: '200ms' }}></div>
-                      <div className="h-2 w-2 animate-bounce rounded-full bg-white" style={{ animationDelay: '400ms' }}></div>
-                    </div>
-                  </motion.div>
-                )}
-                
-                {/* Show error message if any */}
-                {error && (
-                  <motion.div 
-                    className="flex"
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <div className="mr-3 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-red-600 text-white">
-                      <User className="h-6 w-6" />
-                    </div>
-                    <div className="rounded-lg bg-red-100 p-4 text-red-700 max-w-3xl">
-                      <p className="font-medium">Error</p>
-                      <p>{error}</p>
-                    </div>
-                  </motion.div>
-                )}
-                
-                {/* Invisible element to scroll to */}
-                <div ref={messagesEndRef} />
-              </div>
-            </div>
-            
-            {/* Message input - Fixed at bottom */}
-            <div className="flex-shrink-0 border-t p-4 bg-white">
-              <div className="flex items-center gap-2">
-                {/* Streaming toggle button */}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="text-gray-500 hover:bg-gray-100"
-                  onClick={toggleStreaming}
-                  title={useStreaming ? "Turn off streaming" : "Turn on streaming"}
-                >
-                  <Sparkles className={`h-5 w-5 ${useStreaming ? 'text-yellow-500' : 'text-gray-400'}`} />
-                </Button>
-                
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="text-gray-500 hover:bg-gray-100"
-                >
-                  <Paperclip className="h-5 w-5" />
-                </Button>
-                
-                <Input
-                  value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  onKeyDown={handleKeyPress}
-                  placeholder="Type your message here..."
-                  className="flex-1 rounded-full border-gray-300"
-                  disabled={isLoading || isStreaming}
-                />
-                
-                <Button
-                  className="rounded-full bg-red-600 hover:bg-red-700"
-                  onClick={sendMessage}
-                  disabled={isLoading || isStreaming || !inputMessage.trim()}
-                >
-                  <Send className="mr-1 h-4 w-4" />
-                  Send
-                </Button>
-              </div>
-            </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="bg-gray-100 text-gray-800 rounded-2xl rounded-tr-none p-4 max-w-[70%]">
+                        <MessageContent 
+                          content={msg.content} 
+                          sender={msg.sender}
+                        />
+                      </div>
+                      <div className="flex-shrink-0 ml-2">
+                        <Avatar className="w-8 h-8">
+                          <AvatarImage src="/avatar.png" alt={fullName} />
+                          <AvatarFallback>{userInitials}</AvatarFallback>
+                        </Avatar>
+                      </div>
+                    </>
+                  )}
+                </motion.div>
+              );
+            })}
+                  
+            {/* Only show the typing indicator for non-streaming loading */}
+            {isLoading && !isStreaming && (
+              <motion.div 
+                className="flex items-start space-x-2"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3 }}
+              >
+                <div className="flex-shrink-0">
+                  <Image 
+                    src="/uwi-logo.png" 
+                    alt="UWI-GPT" 
+                    width={32} 
+                    height={32} 
+                    className="w-8 h-8"
+                  />
+                </div>
+                <div className="bg-gray-100 rounded-full px-4 py-2">
+                  <div className="flex space-x-1">
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: '0ms' }}></div>
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: '200ms' }}></div>
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: '400ms' }}></div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+                    
+            {/* Show error message if any */}
+            {error && (
+              <motion.div 
+                className="flex items-start space-x-2"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3 }}
+              >
+                <div className="flex-shrink-0">
+                  <div className="w-8 h-8 bg-red-600 rounded-full flex items-center justify-center">
+                    <User className="h-4 w-4 text-white" />
+                  </div>
+                </div>
+                <div className="bg-red-50 text-red-700 rounded-2xl rounded-tl-none p-4">
+                  <p className="font-medium">Error</p>
+                  <p>{error}</p>
+                </div>
+              </motion.div>
+            )}
+                    
+            {/* Invisible element to scroll to */}
+            <div ref={messagesEndRef} />
           </div>
-        </motion.main>
-        
-        {/* Space between main content and right sidebar */}
-        <div className="flex-shrink-0 w-8"></div>
-        
-        {/* Right Sidebar - Resources */}
-        <aside 
-          className={`
-            relative flex-shrink-0 border-l bg-white transition-all duration-300 ease-in-out overflow-hidden
-            ${rightSidebarCollapsed ? 'w-0' : 'w-80'}
-          `}
-        >
-          <div 
-            className="absolute -left-6 top-4 z-10"
-          >
+        </div>
+
+        {/* Bottom Panel with collapsible Info Section */}
+        <div className="border-t bg-gray-50 relative flex-shrink-0">
+          {/* Collapse/Expand button */}
+          <div className="absolute left-1/2 -top-3 transform -translate-x-1/2 z-10">
             <Button 
               variant="ghost" 
               size="icon" 
               className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-200 bg-white shadow-sm hover:bg-gray-100"
-              onClick={toggleRightSidebar}
-              aria-label={rightSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              onClick={toggleInfoSection}
+              aria-label={infoSectionCollapsed ? "Expand info section" : "Collapse info section"}
             >
               <motion.div
-                animate={{ rotate: rightSidebarCollapsed ? 0 : 180 }}
-                transition={{ duration: 0.3 }}
+                animate={{ rotate: infoSectionCollapsed ? 90 : 270 }}
+                transition={{ 
+                  duration: 0.4, 
+                  ease: [0.4, 0.0, 0.2, 1] // Custom easing curve for smoother motion
+                }}
               >
-                {rightSidebarCollapsed ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                <ChevronRight className="h-4 w-4" />
               </motion.div>
             </Button>
           </div>
-          
+
+          {/* Info Section (collapsible) */}
           <AnimatePresence>
-            {!rightSidebarCollapsed && (
+            {!infoSectionCollapsed && (
               <motion.div 
-                className="h-full overflow-y-auto p-4"
-                initial={{ opacity: 0, x: 10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 10 }}
-                transition={{ duration: 0.2 }}
+                className="grid grid-cols-3 gap-4 p-4 border-b w-full"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ 
+                  duration: 0.4, 
+                  ease: [0.4, 0.0, 0.2, 1]
+                }}
               >
-                <h2 className="mb-4 font-semibold">Resources</h2>
-                <nav className="space-y-2">
-                  {resources.map((item, index) => (
-                    <motion.div
-                      key={item.path}
-                      initial={{ opacity: 0, x: 10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: index * 0.05, duration: 0.2 }}
-                    >
-                      <Link
-                        href={item.path}
-                        className="flex items-center gap-3 rounded-lg p-3 text-gray-700 transition-colors hover:bg-gray-100"
+                {/* Recent Chats */}
+                <div className="bg-white p-4 rounded-lg shadow-sm overflow-hidden">
+                  <h3 className="text-sm font-semibold mb-3 flex items-center">
+                    <Clock className="mr-2 h-4 w-4 text-blue-600" />
+                    Recent Chats
+                  </h3>
+                  <div className="space-y-2 max-h-24 overflow-y-auto" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                    {recentChats.map((chat, index) => (
+                      <div 
+                        key={index}
+                        className={`text-sm ${chat.active ? 'bg-blue-50' : 'bg-gray-100'} p-2 rounded cursor-pointer ${chat.active ? 'hover:bg-blue-100' : 'hover:bg-gray-200'}`}
                       >
-                        {item.icon}
-                        <span className="flex-1">{item.label}</span>
-                        {item.hasArrow && <ArrowRight className="h-4 w-4" />}
-                      </Link>
-                    </motion.div>
-                  ))}
-                </nav>
+                        {chat.title} - {chat.time}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Quick Actions */}
+                <div className="bg-white p-4 rounded-lg shadow-sm">
+                  <h3 className="text-sm font-semibold mb-3 flex items-center">
+                    <Zap className="mr-2 h-4 w-4 text-amber-500" />
+                    Quick Actions
+                  </h3>
+                  <div className="grid grid-cols-2 gap-2">
+                    {quickActions.map((action, index) => (
+                      <button 
+                        key={index}
+                        className={`text-sm px-3 py-2 ${action.bgColor} ${action.textColor} rounded-lg ${action.hoverColor} flex items-center justify-center`}
+                      >
+                        {action.icon}
+                        <span className="ml-1">{action.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Suggested Topics */}
+                <div className="bg-white p-4 rounded-lg shadow-sm overflow-hidden">
+                  <h3 className="text-sm font-semibold mb-3 flex items-center">
+                    <LightbulbIcon className="mr-2 h-4 w-4 text-yellow-500" />
+                    Suggested Topics
+                  </h3>
+                  <div className="space-y-2 max-h-24 overflow-y-auto" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                    {suggestedTopics.map((topic, index) => (
+                      <button 
+                        key={index}
+                        className="w-full text-left text-sm px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+                      >
+                        {topic}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </motion.div>
             )}
           </AnimatePresence>
-        </aside>
+            
+          {/* Message input - Fixed at bottom */}
+          <div className="p-4 flex-shrink-0">
+            <div className="flex items-center space-x-4">
+              <div className="flex-1 relative">
+                <Input
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  onKeyDown={handleKeyPress}
+                  placeholder="Type your question here..."
+                  className="w-full px-4 py-3 rounded-lg border focus:ring-2 focus:ring-blue-500"
+                  disabled={isLoading || isStreaming}
+                />
+                <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex items-center space-x-2">
+                  {/* Streaming toggle button */}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="text-gray-400 hover:text-gray-600 h-8 w-8 flex items-center justify-center"
+                    onClick={toggleStreaming}
+                    title={useStreaming ? "Turn off streaming" : "Turn on streaming"}
+                  >
+                    <Sparkles className={`h-5 w-5 ${useStreaming ? 'text-yellow-500' : 'text-gray-400'}`} />
+                  </Button>
+                  
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="text-gray-400 hover:text-gray-600 h-8 w-8 flex items-center justify-center"
+                  >
+                    <Paperclip className="h-5 w-5" />
+                  </Button>
+                </div>
+              </div>
+              
+              <Button
+                className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center"
+                onClick={sendMessage}
+                disabled={isLoading || isStreaming || !inputMessage.trim()}
+              >
+                <Send className="mr-2 h-4 w-4" />
+                Send
+              </Button>
+            </div>
+          </div>
+        </div>
       </div>
-    </motion.div>
-  );
-};
-
-// Wrap with Redux Provider for state management
-export default function ChatPage() {
-  return (
-    <Provider store={store}>
-      <ChatPageContent />
-    </Provider>
+    </div>
+    </Layout>
   );
 }

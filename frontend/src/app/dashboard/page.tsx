@@ -49,31 +49,55 @@ export default function Dashboard() {
       
       {/* Quick actions */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 p-4">
-        <Link href="/chat">
-          <Card className="flex flex-col items-center p-4 text-center hover:shadow-md hover:bg-gray-50 cursor-pointer transition-all h-full">
-            <MessageSquare className="mb-2 h-8 w-8 text-blue-500" />
-            <p className="font-medium">Chat with Advisor</p>
+        <Link href="/chat" className="block h-full">
+          <Card className="h-full">
+            <CardContent className="p-4">
+              <div className="flex flex-col items-center text-center">
+                <div className="rounded-full bg-blue-100 p-3 flex items-center justify-center w-14 h-14 mb-3">
+                  <MessageSquare className="h-6 w-6 text-blue-500" />
+                </div>
+                <p className="font-medium">Chat with Advisor</p>
+              </div>
+            </CardContent>
           </Card>
         </Link>
         
-        <Link href="/schedule">
-          <Card className="flex flex-col items-center p-4 text-center hover:shadow-md hover:bg-gray-50 cursor-pointer transition-all h-full">
-            <Calendar className="mb-2 h-8 w-8 text-blue-500" />
-            <p className="font-medium">Schedule Meeting</p>
+        <Link href="/schedule" className="block h-full">
+          <Card className="h-full">
+            <CardContent className="p-4">
+              <div className="flex flex-col items-center text-center">
+                <div className="rounded-full bg-blue-100 p-3 flex items-center justify-center w-14 h-14 mb-3">
+                  <Calendar className="h-6 w-6 text-blue-500" />
+                </div>
+                <p className="font-medium">Schedule Meeting</p>
+              </div>
+            </CardContent>
           </Card>
         </Link>
         
-        <Link href="/reports">
-          <Card className="flex flex-col items-center p-4 text-center hover:shadow-md hover:bg-gray-50 cursor-pointer transition-all h-full">
-            <FileText className="mb-2 h-8 w-8 text-blue-500" />
-            <p className="font-medium">View Reports</p>
+        <Link href="/reports" className="block h-full">
+          <Card className="h-full">
+            <CardContent className="p-4">
+              <div className="flex flex-col items-center text-center">
+                <div className="rounded-full bg-blue-100 p-3 flex items-center justify-center w-14 h-14 mb-3">
+                  <FileText className="h-6 w-6 text-blue-500" />
+                </div>
+                <p className="font-medium">View Reports</p>
+              </div>
+            </CardContent>
           </Card>
         </Link>
         
-        <Link href="/academic-plan">
-          <Card className="flex flex-col items-center p-4 text-center hover:shadow-md hover:bg-gray-50 cursor-pointer transition-all h-full">
-            <GraduationCap className="mb-2 h-8 w-8 text-blue-500" />
-            <p className="font-medium">Academic Plan</p>
+        <Link href="/academic-plan" className="block h-full">
+          <Card className="h-full">
+            <CardContent className="p-4">
+              <div className="flex flex-col items-center text-center">
+                <div className="rounded-full bg-blue-100 p-3 flex items-center justify-center w-14 h-14 mb-3">
+                  <GraduationCap className="h-6 w-6 text-blue-500" />
+                </div>
+                <p className="font-medium">Academic Plan</p>
+              </div>
+            </CardContent>
           </Card>
         </Link>
       </div>
@@ -238,8 +262,8 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <Card>
             <CardContent className="flex gap-4 p-4">
-              <div className="rounded-full bg-blue-100 p-2 text-blue-500">
-                <BookOpen className="h-5 w-5" />
+              <div className="rounded-full bg-blue-100 p-2 flex items-center justify-center h-10 w-10 shrink-0">
+                <BookOpen className="h-5 w-5 text-blue-500" />
               </div>
               <div className="flex-1">
                 <div className="mb-1 flex items-center justify-between">
@@ -255,8 +279,8 @@ export default function Dashboard() {
           
           <Card>
             <CardContent className="flex gap-4 p-4">
-              <div className="rounded-full bg-green-100 p-2 text-green-500">
-                <MessageSquare className="h-5 w-5" />
+              <div className="rounded-full bg-green-100 p-2 flex items-center justify-center h-10 w-10 shrink-0">
+                <MessageSquare className="h-5 w-5 text-green-500" />
               </div>
               <div className="flex-1">
                 <div className="mb-1 flex items-center justify-between">
@@ -272,8 +296,8 @@ export default function Dashboard() {
           
           <Card>
             <CardContent className="flex gap-4 p-4">
-              <div className="rounded-full bg-amber-100 p-2 text-amber-500">
-                <Calendar className="h-5 w-5" />
+              <div className="rounded-full bg-amber-100 p-2 flex items-center justify-center h-10 w-10 shrink-0">
+                <Calendar className="h-5 w-5 text-amber-500" />
               </div>
               <div className="flex-1">
                 <div className="mb-1 flex items-center justify-between">
