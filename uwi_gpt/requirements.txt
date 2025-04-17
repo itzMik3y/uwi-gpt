@@ -49,3 +49,11 @@ PyMuPDF==1.25.2           # Provides 'fitz' for fallback PDF extraction
 joblib==1.4.2             # Used for caching processed documents
 nltk==3.9.1               # Used by some text splitters for sentence tokenization
 python-dotenv==1.0.1      # (Likely used implicitly for loading env vars like API keys - good practice to include)
+
+# --- Database ---
+# NOTE: SQLAlchemy and psycopg2-binary are used for database access (PostgreSQL)
+sqlalchemy==2.0.30
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+alembic==1.13.1
+email-validator==2.1.1

@@ -27,6 +27,8 @@ env/
 # ---- Docs folder ----
 docs/
 qdrant_data/
+postgres_data/
+pgadmin_data/
 # ---- Chroma DB folder ----
 chroma_db_bilingual/
 
@@ -34,3 +36,4 @@ chroma_db_bilingual/
 .vscode/
 .idea/
 node_modules/
+

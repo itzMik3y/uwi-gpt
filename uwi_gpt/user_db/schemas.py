@@ -1,0 +1,77 @@
+from pydantic import BaseModel, EmailStr
+from typing import Optional
+
+
+class UserCreate(BaseModel):
+    firstname: str
+    lastname: str
+    email: EmailStr
+    student_id: str
+    password: str
+
+
+class UserOut(BaseModel):
+    id: int
+    firstname: str
+    lastname: str
+    email: EmailStr
+    student_id: str
+
+    class Config:
+        from_attributes = True
+
+
+class CourseCreate(BaseModel):
+    id: int
+    fullname: str
+    shortname: str
+    idnumber: str
+    summary: Optional[str] = ""
+    summaryformat: int
+    startdate: int
+    enddate: int
+    visible: bool
+    showactivitydates: bool
+    showcompletionconditions: bool
+    fullnamedisplay: str
+    viewurl: Optional[str] = ""
+    coursecategory: Optional[str] = ""
+
+
+class CourseOut(CourseCreate):
+    class Config:
+        from_attributes = True
+
+
+class TermCreate(BaseModel):
+    term_code: str
+    user_id: int
+    semester_gpa: Optional[float] = None
+    cumulative_gpa: Optional[float] = None
+    degree_gpa: Optional[float] = None
+    credits_earned_to_date: Optional[int] = None
+
+
+class TermOut(TermCreate):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+
+class EnrollmentCreate(BaseModel):
+    user_id: int
+    course_id: int
+    term_id: int
+    course_code: str
+    course_title: str
+    credit_hours: float
+    grade_earned: Optional[str] = None
+    whatif_grade: Optional[str] = None
+
+
+class EnrollmentOut(EnrollmentCreate):
+    id: int
+
+    class Config:
+        from_attributes = True
