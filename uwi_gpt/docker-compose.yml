@@ -30,7 +30,7 @@ services:
       PGADMIN_DEFAULT_EMAIL: admin@uwi.com
       PGADMIN_DEFAULT_PASSWORD: admin123
     ports:
-      - "5051:80"
+      - "5052:80"
     depends_on:
       - postgres
     volumes:
