@@ -10,6 +10,7 @@ import requests
 from bs4 import BeautifulSoup, Tag
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+
 # No need for sessionmaker here if called within request scope
 # from sqlalchemy.orm import sessionmaker
 import traceback
@@ -19,13 +20,24 @@ from .models import MoodleCredentials, SASCredentials
 
 # Imports for the data saving function & helpers
 from user_db.services import (
-    get_course_by_id, create_course, get_term_by_user_and_code, create_term,
-    enroll_user_in_course, create_or_update_course_grade
+    get_course_by_id,
+    create_course,
+    get_term_by_user_and_code,
+    create_term,
+    enroll_user_in_course,
+    create_or_update_course_grade,
 )
 from user_db.schemas import (
-    CourseCreate, TermCreate, EnrollmentCreate, CourseGradeCreate
+    CourseCreate,
+    TermCreate,
+    EnrollmentCreate,
+    CourseGradeCreate,
 )
-from user_db.models import Course, Term, User # User might be needed for type hints if helpers use it
+from user_db.models import (
+    Course,
+    Term,
+    User,
+)  # User might be needed for type hints if helpers use it
 
 
 # --- Logger ---
@@ -795,6 +807,7 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
             "data": data,
         }
 
+
 async def get_or_create_course(db: AsyncSession, course_data: CourseCreate) -> Course:
     """Check if a course exists by ID, if not create it. Relies on caller for commit."""
     existing_course = await get_course_by_id(db, course_data.id)
@@ -805,47 +818,71 @@ async def get_or_create_course(db: AsyncSession, course_data: CourseCreate) -> C
         return await create_course(db, course_data)
     except Exception as e:
         # Log race condition without rollback, try fetch again
-        logger.warning(f"Race condition/Error creating course {course_data.id}. Re-fetching.", exc_info=True)
-        await db.flush() # Flush to ensure any previous adds are processed before fetch
+        logger.warning(
+            f"Race condition/Error creating course {course_data.id}. Re-fetching.",
+            exc_info=True,
+        )
+        await db.flush()  # Flush to ensure any previous adds are processed before fetch
         existing_course = await get_course_by_id(db, course_data.id)
         if existing_course:
             return existing_course
-        logger.error(f"Failed to get or create course {course_data.id} after re-fetch.", exc_info=True)
-        raise # Re-raise original error
+        logger.error(
+            f"Failed to get or create course {course_data.id} after re-fetch.",
+            exc_info=True,
+        )
+        raise  # Re-raise original error
 
 
 async def update_or_create_term(db: AsyncSession, term_data: TermCreate) -> Term:
     """Update existing term or create a new one. Relies on caller for commit."""
-    existing_term = await get_term_by_user_and_code(db, term_data.user_id, term_data.term_code)
+    existing_term = await get_term_by_user_and_code(
+        db, term_data.user_id, term_data.term_code
+    )
     if existing_term:
         updated = False
-        if term_data.semester_gpa is not None and existing_term.semester_gpa != term_data.semester_gpa:
-            existing_term.semester_gpa = term_data.semester_gpa; updated = True
-        if term_data.cumulative_gpa is not None and existing_term.cumulative_gpa != term_data.cumulative_gpa:
-             existing_term.cumulative_gpa = term_data.cumulative_gpa; updated = True
-        if term_data.degree_gpa is not None and existing_term.degree_gpa != term_data.degree_gpa:
-             existing_term.degree_gpa = term_data.degree_gpa; updated = True
-        if term_data.credits_earned_to_date is not None and existing_term.credits_earned_to_date != term_data.credits_earned_to_date:
-             existing_term.credits_earned_to_date = term_data.credits_earned_to_date; updated = True
+        if (
+            term_data.semester_gpa is not None
+            and existing_term.semester_gpa != term_data.semester_gpa
+        ):
+            existing_term.semester_gpa = term_data.semester_gpa
+            updated = True
+        if (
+            term_data.cumulative_gpa is not None
+            and existing_term.cumulative_gpa != term_data.cumulative_gpa
+        ):
+            existing_term.cumulative_gpa = term_data.cumulative_gpa
+            updated = True
+        if (
+            term_data.degree_gpa is not None
+            and existing_term.degree_gpa != term_data.degree_gpa
+        ):
+            existing_term.degree_gpa = term_data.degree_gpa
+            updated = True
+        if (
+            term_data.credits_earned_to_date is not None
+            and existing_term.credits_earned_to_date != term_data.credits_earned_to_date
+        ):
+            existing_term.credits_earned_to_date = term_data.credits_earned_to_date
+            updated = True
         if updated:
-            await db.flush() # Flush changes to session
-            await db.refresh(existing_term) # Refresh state if needed
+            await db.flush()  # Flush changes to session
+            await db.refresh(existing_term)  # Refresh state if needed
         return existing_term
     else:
         # Assuming create_term adds and session commit happens later
         new_term = Term(**term_data.dict())
         db.add(new_term)
-        await db.flush() # Flush to make sure it's added before potential use
+        await db.flush()  # Flush to make sure it's added before potential use
         await db.refresh(new_term)
         return new_term
         # return await create_term(db, term_data) # Use above if create_term commits
 
 
 async def save_initial_scraped_data(
-    db: AsyncSession, # Accept session directly when called by route
+    db: AsyncSession,  # Accept session directly when called by route
     user_id: int,
     moodle_payload: Optional[dict],
-    sas_payload: Optional[dict]
+    sas_payload: Optional[dict],
 ):
     """
     Synchronously processes and saves scraped data within the provided DB session.
@@ -857,88 +894,302 @@ async def save_initial_scraped_data(
         # --- Process Moodle ---
         if moodle_payload and isinstance(moodle_payload.get("courses"), dict):
             current_term_data = TermCreate(term_code="CURRENT", user_id=user_id)
-            current_term = await update_or_create_term(db, current_term_data) # Pass session
+            current_term = await update_or_create_term(
+                db, current_term_data
+            )  # Pass session
 
             moodle_courses = moodle_payload.get("courses", {}).get("courses", [])
-            logger.info(f"SYNC SAVE: Processing {len(moodle_courses)} Moodle courses for user {user_id}")
+            logger.info(
+                f"SYNC SAVE: Processing {len(moodle_courses)} Moodle courses for user {user_id}"
+            )
             for c in moodle_courses:
-                 course_id = c.get("id")
-                 if course_id is None: logger.warning(f"Skipping Moodle course, missing ID: {c.get('fullname')}"); continue
-                 try: course_id = int(course_id)
-                 except (ValueError, TypeError): logger.warning(f"Skipping Moodle course, invalid ID type: {c.get('fullname')}"); continue
+                course_id = c.get("id")
+                if course_id is None:
+                    logger.warning(
+                        f"Skipping Moodle course, missing ID: {c.get('fullname')}"
+                    )
+                    continue
+                try:
+                    course_id = int(course_id)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        f"Skipping Moodle course, invalid ID type: {c.get('fullname')}"
+                    )
+                    continue
 
-                 course_create_data = CourseCreate(
-                     id=course_id,fullname=c.get("fullname","?"), shortname=c.get("shortname",""),
-                     idnumber=c.get("idnumber", ""), summary=c.get("summary", ""),
-                     summaryformat=int(c.get("summaryformat", 1)), startdate=int(c.get("startdate", 0)),
-                     enddate=int(c.get("enddate", 0)), visible=bool(c.get("visible", False)),
-                     showactivitydates=bool(c.get("showactivitydates", False)),
-                     showcompletionconditions=bool(c.get("showcompletionconditions", False)),
-                     fullnamedisplay=c.get("fullnamedisplay", c.get("fullname", "?")),
-                     viewurl=c.get("viewurl", ""), coursecategory=c.get("coursecategory", "")
-                 )
-                 course = await get_or_create_course(db, course_create_data) # Pass session
+                course_create_data = CourseCreate(
+                    id=course_id,
+                    fullname=c.get("fullname", "?"),
+                    shortname=c.get("shortname", ""),
+                    idnumber=c.get("idnumber", ""),
+                    summary=c.get("summary", ""),
+                    summaryformat=int(c.get("summaryformat", 1)),
+                    startdate=int(c.get("startdate", 0)),
+                    enddate=int(c.get("enddate", 0)),
+                    visible=bool(c.get("visible", False)),
+                    showactivitydates=bool(c.get("showactivitydates", False)),
+                    showcompletionconditions=bool(
+                        c.get("showcompletionconditions", False)
+                    ),
+                    fullnamedisplay=c.get("fullnamedisplay", c.get("fullname", "?")),
+                    viewurl=c.get("viewurl", ""),
+                    coursecategory=c.get("coursecategory", ""),
+                )
+                course = await get_or_create_course(
+                    db, course_create_data
+                )  # Pass session
 
-                 enrollment_data = EnrollmentCreate(
-                     user_id=user_id, course_id=course.id, term_id=current_term.id,
-                     course_code=course.shortname, course_title=course.fullname,
-                     # TODO: Determine actual credit hours if possible, defaulting to 3.0
-                     credit_hours=float(c.get("credit_hours", 3.0)) # Example: Try getting from payload or default
-                 )
-                 await enroll_user_in_course(db, enrollment_data) # Pass session
+                enrollment_data = EnrollmentCreate(
+                    user_id=user_id,
+                    course_id=course.id,
+                    term_id=current_term.id,
+                    course_code=course.shortname,
+                    course_title=course.fullname,
+                    # TODO: Determine actual credit hours if possible, defaulting to 3.0
+                    credit_hours=float(
+                        c.get("credit_hours", 3.0)
+                    ),  # Example: Try getting from payload or default
+                )
+                await enroll_user_in_course(db, enrollment_data)  # Pass session
         else:
-            logger.warning(f"SYNC SAVE: No valid Moodle course data to process for user {user_id}")
+            logger.warning(
+                f"SYNC SAVE: No valid Moodle course data to process for user {user_id}"
+            )
 
     except Exception as e:
-        logger.error(f"SYNC SAVE: Failed during Moodle data processing for user {user_id}: {e}", exc_info=True)
-        raise ValueError(f"Failed to save Moodle data") from e # Raise specific error to trigger rollback in router
+        logger.error(
+            f"SYNC SAVE: Failed during Moodle data processing for user {user_id}: {e}",
+            exc_info=True,
+        )
+        raise ValueError(
+            f"Failed to save Moodle data"
+        ) from e  # Raise specific error to trigger rollback in router
 
     try:
         # --- Process SAS ---
-        if sas_payload and sas_payload.get("success") and isinstance(sas_payload.get("data"), dict):
-             sas_data = sas_payload["data"]
-             terms_data = sas_data.get("terms", [])
-             logger.info(f"SYNC SAVE: Processing {len(terms_data)} SAS terms/grades for user {user_id}")
+        if (
+            sas_payload
+            and sas_payload.get("success")
+            and isinstance(sas_payload.get("data"), dict)
+        ):
+            sas_data = sas_payload["data"]
+            terms_data = sas_data.get("terms", [])
+            logger.info(
+                f"SYNC SAVE: Processing {len(terms_data)} SAS terms/grades for user {user_id}"
+            )
 
-             for term in terms_data:
-                  term_code = term.get("term_code")
-                  if not term_code: logger.warning("Skipping SAS term, missing term_code."); continue
+            for term in terms_data:
+                term_code = term.get("term_code")
+                if not term_code:
+                    logger.warning("Skipping SAS term, missing term_code.")
+                    continue
 
-                  term_create_data = TermCreate(
-                       term_code=term_code, user_id=user_id, semester_gpa=term.get("semester_gpa"),
-                       cumulative_gpa=term.get("cumulative_gpa"), degree_gpa=term.get("degree_gpa"),
-                       credits_earned_to_date=term.get("credits_earned_to_date")
-                  )
-                  term_rec = await update_or_create_term(db, term_create_data) # Pass session
+                term_create_data = TermCreate(
+                    term_code=term_code,
+                    user_id=user_id,
+                    semester_gpa=term.get("semester_gpa"),
+                    cumulative_gpa=term.get("cumulative_gpa"),
+                    degree_gpa=term.get("degree_gpa"),
+                    credits_earned_to_date=term.get("credits_earned_to_date"),
+                )
+                term_rec = await update_or_create_term(
+                    db, term_create_data
+                )  # Pass session
 
-                  sas_courses = term.get("courses", [])
-                  for g in sas_courses:
-                       course_code = g.get("course_code")
-                       if not course_code: logger.warning(f"Skipping SAS grade term {term_code}, missing course_code."); continue
+                sas_courses = term.get("courses", [])
+                for g in sas_courses:
+                    course_code = g.get("course_code")
+                    if not course_code:
+                        logger.warning(
+                            f"Skipping SAS grade term {term_code}, missing course_code."
+                        )
+                        continue
 
-                       sas_course_id = -abs(hash(course_code)) % (2**31)
-                       course_create_data = CourseCreate(
-                           id=sas_course_id, fullname=g.get("course_title", course_code), shortname=course_code,
-                           idnumber=course_code, summary="Imported from SAS", summaryformat=1,
-                           startdate=0, enddate=0, visible=True, showactivitydates=False,
-                           showcompletionconditions=False, fullnamedisplay=g.get("course_title", course_code),
-                           viewurl="", coursecategory="SAS Imported"
-                       )
-                       course = await get_or_create_course(db, course_create_data) # Pass session
+                    sas_course_id = -abs(hash(course_code)) % (2**31)
+                    course_create_data = CourseCreate(
+                        id=sas_course_id,
+                        fullname=g.get("course_title", course_code),
+                        shortname=course_code,
+                        idnumber=course_code,
+                        summary="Imported from SAS",
+                        summaryformat=1,
+                        startdate=0,
+                        enddate=0,
+                        visible=True,
+                        showactivitydates=False,
+                        showcompletionconditions=False,
+                        fullnamedisplay=g.get("course_title", course_code),
+                        viewurl="",
+                        coursecategory="SAS Imported",
+                    )
+                    course = await get_or_create_course(
+                        db, course_create_data
+                    )  # Pass session
 
-                       grade_data = CourseGradeCreate(
-                           user_id=user_id, course_id=course.id, term_id=term_rec.id, course_code=course_code,
-                           course_title=g.get("course_title", course_code), credit_hours=float(g.get("credit_hours", 0.0)),
-                           grade_earned=g.get("grade_earned"), whatif_grade=g.get("whatif_grade"),
-                           is_historical=True, earned_date=None
-                       )
-                       await create_or_update_course_grade(db, grade_data) # Pass session
+                    grade_data = CourseGradeCreate(
+                        user_id=user_id,
+                        course_id=course.id,
+                        term_id=term_rec.id,
+                        course_code=course_code,
+                        course_title=g.get("course_title", course_code),
+                        credit_hours=float(g.get("credit_hours", 0.0)),
+                        grade_earned=g.get("grade_earned"),
+                        whatif_grade=g.get("whatif_grade"),
+                        is_historical=True,
+                        earned_date=None,
+                    )
+                    await create_or_update_course_grade(db, grade_data)  # Pass session
         else:
-             logger.warning(f"SYNC SAVE: No successful SAS data found to process for user {user_id}")
+            logger.warning(
+                f"SYNC SAVE: No successful SAS data found to process for user {user_id}"
+            )
 
     except Exception as e:
-        logger.error(f"SYNC SAVE: Failed during SAS data processing for user {user_id}: {e}", exc_info=True)
-        raise ValueError(f"Failed to save SAS data") from e # Raise specific error to trigger rollback in router
+        logger.error(
+            f"SYNC SAVE: Failed during SAS data processing for user {user_id}: {e}",
+            exc_info=True,
+        )
+        raise ValueError(
+            f"Failed to save SAS data"
+        ) from e  # Raise specific error to trigger rollback in router
 
-    logger.info(f"SYNC SAVE: Finished processing initial scraped data for user {user_id}")
+    logger.info(
+        f"SYNC SAVE: Finished processing initial scraped data for user {user_id}"
+    )
     # NO COMMIT/ROLLBACK HERE - handled by calling route
+
+
+def fetch_extra_sas_info(credentials: SASCredentials):
+
+    session = requests.Session()
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    # Step 1: Start at Moodle login page to trigger redirects
+    moodle_login_url = "https://ban.mona.uwi.edu:9077/ssb8x/twbkwbis.P_WWWLogin"
+    # initial_response = session.get(moodle_login_url, headers=headers, allow_redirects=True)
+    initial_response = session.get(
+        moodle_login_url, headers=headers, allow_redirects=True
+    )
+
+    if initial_response.history:
+        print("Redirect history:")
+        for resp in initial_response.history:
+            print(f"{resp.status_code} -> {resp.url}")
+        print(f"Final URL: {initial_response.url}")
+
+    # Step 2: Let redirects take us to the UWI Identity login page
+    soup = BeautifulSoup(initial_response.text, "html.parser")
+    session_data_key_input = soup.find("input", {"name": "sessionDataKey"})
+
+    if not session_data_key_input:
+        return {
+            "success": False,
+            "message": "Failed to extract sessionDataKey. UWI SSO might have changed.",
+        }
+
+    session_data_key = session_data_key_input.get("value")
+
+    # Step 3: Prepare login form data
+    login_url = "https://ban.mona.uwi.edu:9443/commonauth"
+    form_data = {
+        "usernameUserInput": credentials.username,
+        "username": f"{credentials.username}@carbon.super",
+        "password": credentials.password,
+        "sessionDataKey": session_data_key,
+        # "chkRemember": "on"
+    }
+
+    headers_form = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0",
+    }
+
+    # Step 4: Submit login POST request
+    login_response = session.post(
+        login_url, data=form_data, headers=headers_form, allow_redirects=True
+    )
+
+    if login_response.history:
+        print("Redirect history:")
+        for resp in login_response.history:
+            print(f"{resp.status_code} -> {resp.url}")
+        print(f"Final URL: {login_response.url}")
+
+    # Confirm we're logged in
+    if "General Menu" in login_response.text or "bmenu.P_MainMnu" in login_response.url:
+        print("Login successful!")
+    else:
+        print("Login may have failed. Check response.")
+
+    term_submit_page = "https://ban.mona.uwi.edu:9077/ssb8x/bwskflib.P_SelDefTerm"
+
+    term_submit_resp = session.get(term_submit_page, headers=headers)
+    term_soup = BeautifulSoup(term_submit_resp.text, "html.parser")
+
+    term_hidden_inputs = term_soup.find("input", {"name": "name_var"})
+    term_hidden_value = term_hidden_inputs.get("value")
+
+    term_select = "202520"  # hardcoded for now, but can be dynamic if needed, represents 2025/2026 semester 2
+
+    term_payload = {
+        "name_var": term_hidden_value,
+        "term_in": term_select,
+    }
+
+    student_registration_page = "https://ban.mona.uwi.edu:9077/ssb8x/bwcklibs.P_StoreTerm"  # leads to this page after the post request from the term submisison page
+
+    student_registration_resp = session.post(
+        student_registration_page, data=term_payload, headers=headers_form
+    )
+
+    fac_maj_min_page = "https://ban.mona.uwi.edu:9077/ssb8x/UWM_CHANGE_MAJOR.P_DisplayHello"  # target page for majors and minors and faculty
+    fac_maj_min_resp = session.get(fac_maj_min_page, headers=headers)
+
+    def parse_student_info(html_content):
+        soup = BeautifulSoup(html_content, "html.parser")
+
+        info = {"Majors": [], "Minors": [], "Faculty": None}
+
+        rows = soup.find_all("tr")
+
+        for row in rows:
+            cells = row.find_all("td")
+            if len(cells) >= 4:
+                header1 = cells[0].get_text(strip=True)
+                data1 = (
+                    cells[1].find("b").get_text(strip=True)
+                    if cells[1].find("b")
+                    else ""
+                )
+                header2 = cells[2].get_text(strip=True)
+                data2 = (
+                    cells[3].find("b").get_text(strip=True)
+                    if cells[3].find("b")
+                    else ""
+                )
+
+                if data1 and "Term" not in data1:
+                    if "Major" in header1:
+                        info["Majors"].append(data1)
+                    if "Minor" in header1:
+                        info["Minors"].append(data1)
+                    if "Faculty/College" in header1:
+                        info["Faculty"] = data1
+
+                if data2 and "Term" not in data2:
+                    if "Major" in header2:
+                        info["Majors"].append(data2)
+                    if "Minor" in header2:
+                        info["Minors"].append(data2)
+                    if "Faculty/College" in header2:
+                        info["Faculty"] = data2
+
+        return info
+
+    data = parse_student_info(fac_maj_min_resp.text)
+
+    return {
+        "success": True,
+        "data": data,
+    }
