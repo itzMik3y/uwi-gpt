@@ -1,7 +1,7 @@
 // app/login/page.tsx
 "use client"
 
-import { useState, useEffect } from "react" // Import useEffect
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import Image from "next/image"
 import Link from "next/link"
@@ -11,79 +11,59 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Card, CardContent } from "@/components/ui/card"
 import { Shield, GraduationCap, User } from "lucide-react"
 import { useAppDispatch, useAppSelector } from "@/store/hooks"
-import { loginUser } from "@/store/slices/authSlice" // Ensure correct path
+import { loginUser, fetchUserData } from "@/store/slices/authSlice"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 
-// Define localStorage keys (consider defining these in a shared constants file)
-const USERNAME_KEY = 'moodle_username';
-const PASSWORD_KEY = 'moodle_password'; // !!! INSECURE KEY !!!
-
 export default function LoginPage() {
-  const [username, setUsername] = useState("") 
+  const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
-  const [rememberMe, setRememberMe] = useState(false) // Consider linking rememberMe to saving credentials
+  const [rememberMe, setRememberMe] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
   
   const dispatch = useAppDispatch()
   const { isLoading, error, isAuthenticated } = useAppSelector(state => state.auth)
   const router = useRouter()
   
+  // Check if already authenticated and redirect if needed
   useEffect(() => {
-    const savedUsername = localStorage.getItem(USERNAME_KEY);
-    const savedPassword = localStorage.getItem(PASSWORD_KEY); 
-    if (savedUsername) {
-      setUsername(savedUsername);
+    if (isAuthenticated) {
+      router.push('/dashboard')
     }
-    if (savedPassword) {
-      setPassword(savedPassword);
-      setRememberMe(true); 
-    }
-  }, []);
-  
+  }, [isAuthenticated, router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLocalError(null)
     
+    if (!username || !password) {
+      setLocalError("Please enter both username and password")
+      return
+    }
+    
     try {
-      await dispatch(loginUser({
+      // First login to get tokens
+      const loginResult = await dispatch(loginUser({
         username, 
         password
-      })).unwrap() // unwrap handles potential rejection from createAsyncThunk
+      })).unwrap()
       
-      // On successful login, navigation will happen if unwrap() doesn't throw.
-      // If 'rememberMe' is unchecked, clear the stored password (optional enhancement)
-      if (!rememberMe) {
-         localStorage.removeItem(PASSWORD_KEY); // Remove insecure password if not remembered
-      }
-
-      router.push('/dashboard') // Navigate after successful login
-
-    } catch (rejectedValueOrSerializedError) {
-      // Error handling if loginUser rejected
-      setLocalError(rejectedValueOrSerializedError as string || 'Login failed');
-      console.error('Login error:', rejectedValueOrSerializedError);
+      // Then fetch user data
+      await dispatch(fetchUserData()).unwrap()
+      
+      // Navigate after successful login and data fetch
+      router.push('/dashboard')
+    } catch (error: any) {
+      setLocalError(error || 'Login failed. Please check your credentials.')
+      console.error('Login error:', error)
     }
   }
-
-  // Handle 'Remember Me' checkbox change - decide if you want to clear stored password immediately
-   const handleRememberMeChange = (checked: boolean) => {
-     setRememberMe(checked);
-     if (!checked) {
-       // If unchecked, immediately remove the stored password
-       localStorage.removeItem(PASSWORD_KEY); // !!! Remove insecure password !!!
-     }
-     // Note: Username might still be stored based on your logic in authSlice
-   };
-
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-blue-100 p-4">
       <Card className="w-full max-w-3xl overflow-hidden p-0 shadow-xl">
         <div className="flex flex-col md:flex-row">
           {/* Left side - Dark blue section */}
-          {/* ... (left side content remains the same) ... */}
-           <div className="relative flex flex-col justify-center bg-blue-950 p-8 text-white md:w-1/2">
+          <div className="relative flex flex-col justify-center bg-blue-950 p-8 text-white md:w-1/2">
             <div className="mb-6">
               <Image 
                 src="/uwi-logo.png" 
@@ -178,8 +158,7 @@ export default function LoginPage() {
                   <Checkbox
                     id="remember"
                     checked={rememberMe}
-                    // Updated handler
-                    onCheckedChange={(checked) => handleRememberMeChange(checked as boolean)}
+                    onCheckedChange={(checked) => setRememberMe(!!checked)}
                     disabled={isLoading}
                   />
                   <label
@@ -191,7 +170,7 @@ export default function LoginPage() {
                 </div>
                 
                 <Link
-                  href="/forgot-password" // Ensure this route exists
+                  href="/forgot-password"
                   className="text-sm font-medium text-red-600 hover:text-red-500"
                 >
                   Forgot password?
@@ -211,7 +190,7 @@ export default function LoginPage() {
               <p className="text-center text-sm text-gray-600">
                 Don&apos;t have an account?{" "}
                 <Link href="/register" className="font-medium text-red-600 hover:text-red-500">
-                  Create Account {/* Ensure this route exists */}
+                  Create Account
                 </Link>
               </p>
             </form>
@@ -224,5 +203,4 @@ export default function LoginPage() {
         </div>
       </Card>
     </div>
-  )
-}
+  ) }

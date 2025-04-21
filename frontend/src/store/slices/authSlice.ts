@@ -1,88 +1,121 @@
 // src/store/slices/authSlice.ts
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
-import { moodleApi } from '@/lib/api/moodleClient';
-import { MoodleLoginRequest, MoodleLoginResponse } from '@/types/moodle';
-import { MoodleCourse,MoodleUser,MoodleAuthTokens } from '@/types/moodle';
+import { moodleApi, TOKEN_STORAGE_KEY, REFRESH_TOKEN_STORAGE_KEY, TOKEN_EXPIRY_KEY } from '@/lib/api/moodleClient';
+import {
+  MoodleLoginRequest,
+  CombinedLoginResponse,
+  AuthResponse,
+  MoodleUser,
+  MoodleCourse,
+  MoodleAuthTokens,
+  MoodleCalendarEvent,
+  GradesDataPayload,
+  GradesStatus
+} from '@/types/moodle';
 
 interface AuthState {
   isAuthenticated: boolean;
-  user: MoodleUser | null;       // Store the complete user info object
-  courses: MoodleCourse[] | null; // Store courses data (if needed)
-  calendarEvents: any | null;     // Type as needed (or create an interface)
+  isAuthInitialized: boolean;
+  user: MoodleUser | null;
+  courses: MoodleCourse[] | null;
+  calendarEvents: {
+    events: MoodleCalendarEvent[];
+    firstid: number | null;
+    lastid: number | null;
+  } | null;
   authTokens: MoodleAuthTokens | null;
+  gradesData: GradesDataPayload | null;
+  gradesStatus: GradesStatus | null;
   isLoading: boolean;
   error: string | null;
 }
 
 const initialState: AuthState = {
   isAuthenticated: false,
+  isAuthInitialized: false,
   user: null,
   courses: null,
   calendarEvents: null,
   authTokens: null,
+  gradesData: null,
+  gradesStatus: null,
   isLoading: false,
   error: null
 };
 
-// Define localStorage keys
-const USERNAME_KEY = 'moodle_username';
-const PASSWORD_KEY = 'moodle_password'; // !!! INSECURE - FOR DEMONSTRATION ONLY !!!
-const TOKEN_KEY = 'moodle_auth_token'; // If you use tokens
-
-export const loginUser = createAsyncThunk(
-  'auth/login',
-  async (credentials: MoodleLoginRequest, { rejectWithValue }) => {
-    try {
-      const response = await moodleApi.login(credentials);
-      // Return the complete response data so you can later store it in Redux state.
-      return {
-        user: response.user_info,          // Contains name, email, student_id, etc.
-        courses: response.courses,           // Contains list of courses
-        calendarEvents: response.calendar_events, // Contains calendar events
-        authTokens: response.auth_tokens     // Contains login_token, sesskey, and moodle_session
-      };
-    } catch (error: any) {
-      const errorMessage = error?.response?.data?.error || error?.message || 'Login failed';
-      return rejectWithValue(errorMessage);
-    }
+// Login thunk - handles the initial login process
+export const loginUser = createAsyncThunk<
+  AuthResponse,
+  MoodleLoginRequest,
+  { rejectValue: string }
+>('auth/login', async (credentials, { rejectWithValue }) => {
+  try {
+    return await moodleApi.login(credentials);
+  } catch (err: any) {
+    return rejectWithValue(err?.message || 'Login failed');
   }
-);
+});
 
+// Fetch user data thunk - gets user data after login
+export const fetchUserData = createAsyncThunk<
+  CombinedLoginResponse,
+  void,
+  { rejectValue: string }
+>('auth/fetchUserData', async (_, { rejectWithValue }) => {
+  try {
+    return await moodleApi.getUserData();
+  } catch (err: any) {
+    return rejectWithValue(err?.message || 'Failed to fetch user data');
+  }
+});
+
+// Check auth status thunk - verifies if the current token is valid
+export const checkAuthStatus = createAsyncThunk<
+  boolean,
+  void,
+  { rejectValue: string }
+>('auth/checkStatus', async (_, { dispatch, rejectWithValue }) => {
+  try {
+    // Check if access token exists and is valid
+    if (!moodleApi.isAuthenticated()) {
+      return false;
+    }
+    
+    // Try to fetch user data to validate the token
+    await dispatch(fetchUserData());
+    return true;
+  } catch (err: any) {
+    // If error occurs, token might be invalid
+    return false;
+  }
+});
 
 const authSlice = createSlice({
   name: 'auth',
   initialState,
   reducers: {
-    logout: (state) => {
+    logout(state) {
       state.isAuthenticated = false;
       state.user = null;
       state.courses = null;
       state.calendarEvents = null;
       state.authTokens = null;
-      // Also clear tokens from API client and localStorage:
-      moodleApi.clearToken();
-      localStorage.removeItem('moodle_auth_token');
-      localStorage.removeItem('moodle_username');
-      localStorage.removeItem('moodle_password');
+      state.gradesData = null;
+      state.gradesStatus = null;
+      state.isLoading = false;
+      state.error = null;
+      
+      // Clear tokens from API client and localStorage
+      moodleApi.clearTokens();
     },
-    initializeAuth: (state) => {
-      // Read token and username from localStorage if available.
-      const token = localStorage.getItem('moodle_auth_token');
-      const username = localStorage.getItem('moodle_username');
-      if (token && username) {
-        state.authTokens = { login_token: token } as MoodleAuthTokens;
-        // Optionally you could also retrieve more detailed user data from a stored JSON.
-        state.user = { name: '', email: username, student_id: '' };
-        state.isAuthenticated = true;
-        moodleApi.setToken(token);
-      } else {
-        state.isAuthenticated = false;
-        state.user = null;
-        state.authTokens = null;
-      }
+    
+    // Mark authentication as initialized (whether successful or not)
+    setAuthInitialized(state, action: PayloadAction<boolean>) {
+      state.isAuthInitialized = action.payload;
     }
   },
   extraReducers: (builder) => {
+    // Login
     builder
       .addCase(loginUser.pending, (state) => {
         state.isLoading = true;
@@ -91,29 +124,77 @@ const authSlice = createSlice({
       .addCase(loginUser.fulfilled, (state, action) => {
         state.isLoading = false;
         state.isAuthenticated = true;
-        state.user = action.payload.user;
-        state.courses = action.payload.courses.courses; // adjust if your nested structure differs
-        state.calendarEvents = action.payload.calendarEvents;
-        state.authTokens = action.payload.authTokens;
+        state.error = null;
+        state.isAuthInitialized = true;
         
-        // Optionally store credentials in localStorage for auto population
-        localStorage.setItem('moodle_username', action.payload.user.student_id);
-        localStorage.setItem('moodle_password', action.meta.arg.password);
-        // If you use a real token:
-        // localStorage.setItem('moodle_auth_token', action.payload.authTokens.login_token);
-
-        // Update API client with token if applicable:
-        // moodleApi.setToken(action.payload.authTokens.login_token);
+        // Note: We don't set user data here yet - that happens in fetchUserData
       })
       .addCase(loginUser.rejected, (state, action) => {
         state.isLoading = false;
-        state.error = action.payload as string;
+        state.error = action.payload || 'Login failed';
         state.isAuthenticated = false;
+        state.isAuthInitialized = true;
+      })
+      
+      // Fetch User Data
+      .addCase(fetchUserData.pending, (state) => {
+        state.isLoading = true;
+        state.error = null;
+      })
+      .addCase(fetchUserData.fulfilled, (state, action) => {
+        state.isLoading = false;
+        state.error = null;
+        state.isAuthInitialized = true;
+        
+        const { moodle_data, grades_data, grades_status } = action.payload;
+        
+        state.user = moodle_data.user_info;
+        state.courses = moodle_data.courses.courses;
+        state.calendarEvents = moodle_data.calendar_events;
+        state.authTokens = moodle_data.auth_tokens;
+        state.gradesData = grades_data;
+        state.gradesStatus = grades_status;
+        state.isAuthenticated = true;
+      })
+      .addCase(fetchUserData.rejected, (state, action) => {
+        state.isLoading = false;
+        state.error = action.payload || 'Failed to fetch user data';
+        
+        // Keep isAuthenticated unchanged here - only loginUser and logout should change this
+      })
+      
+      // Check Auth Status
+      .addCase(checkAuthStatus.pending, (state) => {
+        state.isLoading = true;
+      })
+      .addCase(checkAuthStatus.fulfilled, (state, action) => {
+        state.isLoading = false;
+        state.isAuthInitialized = true;
+        
+        // If status check returns false, we explicitly set isAuthenticated to false
+        if (!action.payload) {
+          state.isAuthenticated = false;
+          state.user = null;
+          state.courses = null;
+          state.calendarEvents = null;
+          state.authTokens = null;
+          state.gradesData = null;
+          state.gradesStatus = null;
+        }
+      })
+      .addCase(checkAuthStatus.rejected, (state) => {
+        state.isLoading = false;
+        state.isAuthenticated = false;
+        state.isAuthInitialized = true;
         state.user = null;
+        state.courses = null;
+        state.calendarEvents = null;
         state.authTokens = null;
+        state.gradesData = null;
+        state.gradesStatus = null;
       });
   }
 });
 
-export const { logout, initializeAuth } = authSlice.actions;
+export const { logout, setAuthInitialized } = authSlice.actions;
 export default authSlice.reducer;

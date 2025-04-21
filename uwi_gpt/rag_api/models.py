@@ -15,6 +15,7 @@ class QueryResponse(BaseModel):
     answer: str
     processing_time: float
     context: str
+    user_context: Optional[Dict[str, Any]] = None
 
 # rag_api/models.py
 class SwitchLLMRequest(BaseModel):

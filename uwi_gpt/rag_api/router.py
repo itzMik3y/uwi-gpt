@@ -1,908 +1,836 @@
 #!/usr/bin/env python
 """
 rag_api/router.py - Router for the RAG-based QA system API endpoints
-(Updated to use prompts from prompts.py and fix async for TypeError)
+(Enhanced user context integration, with response context mirroring /auth/me)
 """
 
 import logging
 import time
-from typing import Optional, List, Dict, Any # Added Dict, Any
-from fastapi.responses import StreamingResponse
 import json
 import asyncio
-# Import custom exceptions if you define them
-# from .exceptions import RAGError, LLMError, RetrieverError
-
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
 import re
-# Import RAG components
+from typing import Optional, List, Dict, Any, Tuple # Added Tuple
+from datetime import datetime
+
+from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+# --- Authentication Imports ---
+# Import the dependency function to get the current user
+try:
+    from auth.utils import get_current_user
+except ImportError:
+    # Fallback if auth module structure is different
+    try:
+        from ..auth.utils import get_current_user
+    except ImportError:
+        logging.error("Could not import get_current_user dependency. Auth will not work.")
+        # Define a placeholder dependency that raises an error if auth is required but missing
+        async def get_current_user():
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Authentication module not configured correctly.")
+
+# Import the User model and related models for type hinting and context extraction
+try:
+    from user_db.models import User, EnrolledCourse, CourseGrade, Term, Course # Ensure these are correct
+except ImportError:
+     logging.warning("Could not import User model or related DB models. Type hinting may be affected.")
+     # Define placeholder types if models aren't available
+     User = Any
+     EnrolledCourse = Any
+     CourseGrade = Any
+     Term = Any
+     Course = Any
+
+
+# --- RAG Component Imports ---
 # Ensure these imports are correct relative to your project structure
 try:
+    # Assuming models.py defines these Pydantic models
     from .models import QueryRequest, QueryResponse, SwitchLLMRequest
     from .initialize import (
         get_ensemble_retriever,
         get_llm,
-        get_documents, # May not be needed directly in router
         rerank_with_crossencoder,
         switch_llm_backend,
         get_model_info
     )
-    # --- MODIFICATION: Import the function to get prompts from prompts.py ---
-    from .prompts import get_prompts_dict
+    from .prompts import get_prompts_dict # Load prompts function
+    from .retrievers import get_doc_id as get_consistent_doc_id # Consistent ID helper
 except ImportError as e:
-    # Handle import errors gracefully during startup if possible
-    logging.error(f"Error importing RAG components or prompts: {e}. Check module paths.")
-    # Depending on severity, you might raise an error or disable endpoints
+    logging.error(f"Error importing RAG components or prompts: {e}. Check module paths.", exc_info=True)
+    # Define placeholders or raise error if critical components missing
+    get_ensemble_retriever = lambda: None
+    get_llm = lambda: None
+    rerank_with_crossencoder = lambda query, docs: docs # Passthrough
+    get_prompts_dict = lambda: {"default_prompt": "Context: {context}\nQuestion: {question}\nAnswer:"} # Basic fallback
+    get_consistent_doc_id = lambda doc: getattr(doc, 'id', id(doc))
+    # Define placeholder models if needed, or let it fail on endpoint definition
+    class QueryRequest(BaseModel): query: str
+    # Ensure QueryResponse expects the Dict for user_context
+    class QueryResponse(BaseModel): answer: str; processing_time: float; context: str; user_context: Dict[str, Any]
+    class SwitchLLMRequest(BaseModel): backend: str
 
-# Set up router
+
+# --- Router Setup ---
 router = APIRouter(
     prefix="/rag",
-    tags=["RAG"],
-    responses={404: {"description": "Not found"}},
+    tags=["RAG QA"],
+    responses={
+        404: {"description": "Not found"},
+        401: {"description": "Unauthorized"},
+    },
 )
 
-# Configure logger for this module
 logger = logging.getLogger(__name__)
-# Ensure root logger is configured elsewhere, e.g., in your main app setup
-# logging.basicConfig(level=logging.INFO) # Example basic config
-
 
 # --- Helper Functions ---
 
 def format_documents_for_llm(docs: List[Any]) -> str:
-    """
-    Format a list of documents with enhanced metadata for better LLM context.
-    Uses the source filename as the primary identifier within the context block.
-    Uses LangChain Document structure (page_content, metadata).
-    """
-    if not docs:
-        return "No relevant documents found."
-
+    """Formats documents, extracting source and key metadata."""
+    if not docs: return "No relevant documents found."
     formatted_docs = []
-    # Keep track of source counts if needed for disambiguation (optional)
-    # source_counts = {}
-
-    # Use enumerate to get an index 'i' for potential fallback or logging
     for i, doc in enumerate(docs):
         try:
-            # Safely access metadata
             metadata = getattr(doc, 'metadata', {})
-            # --- MODIFICATION START ---
-            # Get the source filename, default to "Unknown_Source"
-            source_filename = metadata.get("source_file", f"Unknown_Source_{i+1}")
-            # Optional: Clean up filename (remove path, keep base name)
-            # import os # Import os if using basename
-            # source_filename = os.path.basename(source_filename)
-
-            # Create the header using the filename
-            # You could add the index if filenames might not be unique: f"[{source_filename} - Part {i+1}]"
-            # Or keep it simple if filenames are expected to be unique *within the context*:
+            # Try standard metadata keys, fallback to generic naming
+            source_filename = metadata.get("source", metadata.get("source_file", f"Unknown_Source_{i+1}"))
             doc_header = f"\n--- SOURCE [{source_filename}] ---\n"
-            # --- MODIFICATION END ---
-
-            # Add other metadata if present (excluding source_file as it's in the header now)
-            # Also, ensure 'source' key itself isn't duplicated if it exists separately
-            metadata_keys_to_show = ["title", "heading", "department", "faculty", "doc_type", "course_codes", "credits", "level", "semester", "requirement_type", "policy_area", "chunk_index", "chunk_count"] # Add chunk info?
-
+            # Define keys you expect/want to show from metadata
+            metadata_keys_to_show = [
+                "title", "heading", "department", "faculty", "doc_type",
+                "course_codes", "credits", "level", "semester",
+                "requirement_type", "policy_area", "chunk_index", "chunk_count",
+                # Add any other relevant metadata keys here
+            ]
             for key in metadata_keys_to_show:
-                 if key in metadata:
-                     # Simple formatting, adjust if needed (e.g., list for course_codes)
-                     value = metadata[key]
-                     if isinstance(value, list):
-                         value_str = ", ".join(map(str, value))
-                     else:
-                         value_str = str(value)
-                     # Only add if value is meaningful (not just 'N/A' or empty)
-                     if value_str and value_str.strip() and value_str != "N/A":
+                if key in metadata:
+                    value = metadata[key]
+                    # Format list values nicely
+                    value_str = ", ".join(map(str, value)) if isinstance(value, list) else str(value)
+                    # Only add if value has content and isn't just placeholder/empty
+                    if value_str and value_str.strip() and value_str.lower() not in ["n/a", "none", ""]:
                          doc_header += f"{key.upper().replace('_', ' ')}: {value_str}\n"
 
-            # Content Separator
             doc_header += "CONTENT:\n"
-
-            # Page Content (ensure it's a string)
-            page_content = getattr(doc, 'page_content', '')
-            if not isinstance(page_content, str):
-                 page_content = str(page_content) # Force to string if not already
-
-            formatted_docs.append(f"{doc_header}{page_content.strip()}\n") # Strip whitespace from content
-
+            # Get page content, default to empty string if missing
+            page_content = str(getattr(doc, 'page_content', ''))
+            formatted_docs.append(f"{doc_header}{page_content.strip()}\n")
         except Exception as e:
-            source_display = metadata.get('source_file', f"Unknown_Source_{i+1}")
-            logger.error(f"Error formatting document chunk from {source_display} (index {i}): {e}", exc_info=True)
-            # Optionally append an error message to the context using the filename
+            source_display = metadata.get('source_file', f"Unknown_Source_{i+1}") # Fallback source display
+            logger.error(f"Error formatting doc from {source_display} (idx {i}): {e}", exc_info=True)
             formatted_docs.append(f"\n--- SOURCE [{source_display}] --- (Error formatting document) ---\n")
-
     return "".join(formatted_docs)
 
 def classify_and_enrich_documents(docs: List[Any], query: str) -> List[Any]:
-    """
-    Classify documents by type and add rich metadata to help the LLM understand context.
-    Uses LangChain Document structure. Modifies metadata in place.
-    """
-    # --- Keep this function as is ---
-    import re # Keep import here if only used here
+    """Classifies documents based on content and adds metadata."""
+    if not docs: return []
 
-    if not docs:
-        return []
-
-    # Extract query keywords for targeted enrichment
+    # Simple keyword/regex based classification - adapt as needed
     query_keywords = set(query.lower().split())
-
-    # Common patterns for document classification
-    course_code_pattern = re.compile(r'\b([A-Z]{4}\d{4})\b') # Capture group for the code
-    credit_pattern = re.compile(r'\b(\d+)\s*credits?\b', re.IGNORECASE)
-    level_pattern = re.compile(r'\blevel\s*(\d+)\b', re.IGNORECASE)
-    # Pattern for potential course descriptions (heuristic)
-    course_desc_keywords = ["course description", "aims", "objectives", "learning outcomes", "topics covered", "course content"]
-
+    course_code_pattern = re.compile(r'\b([A-Z]{4}\d{4})\b') # Example: ABCD1234
+    prereq_pattern = r'\b(?:pre[- ]?requisites?|requirements?|mandatory|must have)\b'
+    policy_pattern = r'\b(?:policy|policies|regulation|rules|guidelines?)\b'
+    description_pattern = r'\b(?:description|aims?|objectives?|outline|syllabus)\b'
 
     for doc in docs:
-        # Ensure metadata exists and is a dictionary
+        # Ensure metadata exists and is a dict
         if not hasattr(doc, 'metadata') or not isinstance(doc.metadata, dict):
             doc.metadata = {}
 
-        # Ensure page_content exists and is a string
-        content = getattr(doc, 'page_content', '')
-        if not isinstance(content, str):
-              content = str(content) # Force to string
+        content = str(getattr(doc, 'page_content', ''))
         content_lower = content.lower()
 
-        # --- Classification Logic ---
-        doc_type = "general" # Default
-        course_codes_found = course_code_pattern.findall(content) # Find all codes
+        # Determine document type
+        doc_type = "general" # Default type
+        course_codes_found = course_code_pattern.findall(content) # Find all course codes
 
-        # Check for policy first (often contains other terms)
-        if any(term in content_lower for term in ["policy", "regulation", "rule", "procedure", "ordinance", "statute"]):
-              doc_type = "policy"
-              if "academic" in content_lower and "integrity" in content_lower:
-                  doc.metadata["policy_area"] = "academic_integrity"
-              elif "examination" in content_lower:
-                  doc.metadata["policy_area"] = "examination"
-              elif "registration" in content_lower:
-                  doc.metadata["policy_area"] = "registration"
-              # Add more policy areas as needed
+        # Classification logic (priority matters)
+        if re.search(policy_pattern, content_lower):
+            doc_type = "policy"
+        elif re.search(prereq_pattern, content_lower):
+            doc_type = "requirement"
+        elif course_codes_found and re.search(description_pattern, content_lower):
+            doc_type = "course_description"
+        elif course_codes_found:
+            # Could be a listing, schedule, etc. if not clearly a description
+            doc_type = "course_listing"
+        # Add more rules as needed (e.g., faculty info, contact pages)
 
-        # Check for requirements
-        elif any(term in content_lower for term in ["requirement", "mandatory", "compulsory", "must complete", "eligible for", "eligibility"]):
-              doc_type = "requirement"
-              # Use robust regex check for prerequisite variations
-              prereq_pattern = r'\b(?:pre[- ]?requisites?|anti[- ]?requisites?|co[- ]?requisites?)\b'
-              if re.search(prereq_pattern, content_lower):
-                  doc.metadata["requirement_type"] = "prerequisite" # Or more specific based on term
-              elif "graduate" in content_lower or "graduation" in content_lower:
-                  doc.metadata["requirement_type"] = "graduation"
-              elif "assessment" in content_lower or "examination" in content_lower:
-                  doc.metadata["requirement_type"] = "assessment"
-              # Add more requirement types
-
-        # Check for course descriptions (can overlap with requirements)
-        # Prioritize if course codes AND descriptive keywords are present
-        elif course_codes_found and any(keyword in content_lower for keyword in course_desc_keywords):
-              doc_type = "course_description"
-
-        # Fallback if only course codes are found
-        elif course_codes_found and doc_type == "general":
-              doc_type = "course_listing" # Or maybe still 'course_description' if context implies it
-
-
-        # Assign final doc_type
         doc.metadata["doc_type"] = doc_type
 
-        # --- Enrichment Logic ---
+        # Add found course codes to metadata if any
         if course_codes_found:
-              # Store unique codes found in this chunk
-              doc.metadata["course_codes"] = sorted(list(set(course_codes_found)))
-
-        credit_matches = credit_pattern.findall(content) # Find all credit numbers
-        if credit_matches:
-              # Store as list if multiple found, or single value if one
-              unique_credits = sorted(list(set(map(int, credit_matches)))) # Convert to int, get unique
-              doc.metadata["credits"] = unique_credits[0] if len(unique_credits) == 1 else unique_credits
-
-        level_matches = level_pattern.findall(content)
-        if level_matches:
-              unique_levels = sorted(list(set(map(int, level_matches))))
-              doc.metadata["level"] = unique_levels[0] if len(unique_levels) == 1 else unique_levels
-
-        semester_pattern = re.compile(r'\b(semester\s*[1-3]|year|summer)\b', re.IGNORECASE)
-        semester_matches = semester_pattern.findall(content_lower)
-        if semester_matches:
-              # Normalize and store unique semesters
-              normalized_semesters = []
-              for sem in semester_matches:
-                   s = sem.lower().replace(" ", "")
-                   if "1" in s: normalized_semesters.append("Semester 1")
-                   elif "2" in s: normalized_semesters.append("Semester 2")
-                   elif "3" in s: normalized_semesters.append("Semester 3")
-                   elif "summer" in s: normalized_semesters.append("Summer")
-                   elif "year" in s: normalized_semesters.append("Year Long")
-              if normalized_semesters:
-                   doc.metadata["semester"] = sorted(list(set(normalized_semesters)))
-
-
-        # Extract relevant keywords from query that are present in content
-        doc_keywords = doc.metadata.get("keywords", []) # Get existing or init empty
-        for keyword in query_keywords:
-              if len(keyword) > 3 and keyword in content_lower:
-                  if keyword not in doc_keywords:
-                      doc_keywords.append(keyword)
-        if doc_keywords: # Only update if keywords were added
-              doc.metadata["keywords"] = doc_keywords
-
-
-        # Calculate a simple relevance score (heuristic for sorting before re-ranking)
-        # This is less critical now due to cross-encoder, but can help initial ordering
-        keyword_count = len(doc.metadata.get("keywords", []))
-        course_code_bonus = 5 if "course_codes" in doc.metadata else 0
-        type_bonus = 3 if doc.metadata.get("doc_type", "general") not in ["general", "policy"] else 0 # Boost course/req types
-        relevance = min(100, (keyword_count * 5) + course_code_bonus + type_bonus) # Adjusted weights
-        doc.metadata["relevance_score"] = relevance
+            # Store unique, sorted codes
+            doc.metadata["course_codes"] = sorted(list(set(course_codes_found)))
 
     return docs
 
 def get_chosen_prompt(query: str, docs: List[Any], prompts: Dict[str, Any]):
-    """Select the appropriate prompt template based on the query and documents."""
-    # --- Keep this function as is ---
-    # It now correctly receives the prompts dict loaded from prompts.py
+    """Selects an appropriate prompt template based on query/document analysis."""
+    if not prompts:
+        logger.error("Prompts dictionary is empty!")
+        return None # Or raise an error
+
+    default_prompt = prompts.get("default_prompt")
+    if not default_prompt:
+         logger.error("Default prompt is missing from prompts dictionary!")
+         # Try to grab *any* prompt as a last resort
+         return next(iter(prompts.values()), None) if prompts else None
+
     query_lower = query.lower()
-    # Ensure docs list is not empty before accessing metadata
     doc_types = [doc.metadata.get("doc_type", "general") for doc in docs] if docs else []
-    # Check for prerequisite variations using regex
+
+    # --- Prompt Selection Logic (Customize extensively based on your prompts) ---
+
+    # Example: Prioritize requirement/credit related prompts
     prereq_pattern = r'\b(?:pre[- ]?requisites?|requirements?)\b'
     is_prereq_query = bool(re.search(prereq_pattern, query_lower))
+    if any(k in query_lower for k in ["credit", "graduate", "requirement", "gpa"]) \
+       or "requirement" in doc_types \
+       or is_prereq_query:
+        chosen = prompts.get("credit_prompt", default_prompt)
+        logger.debug(f"Choosing prompt: {'credit_prompt' if chosen != default_prompt else 'default_prompt (fallback)'}")
+        return chosen
 
-    # Check for credit-related keywords or requirement doc types OR is_prereq_query
-    # Added "requirement" to keywords, check doc_type 'requirement' and the regex flag
-    if any(keyword in query_lower for keyword in ["credit", "graduate", "bsc", "degree", "study", "requirement"]) or "requirement" in doc_types or is_prereq_query:
-        logger.debug("Choosing credit/requirement prompt.")
-        # Check if the specific prompt exists in the loaded dictionary
-        return prompts.get("credit_prompt", prompts.get("default_prompt")) # Fallback to default
+    # Example: Course related prompts
+    has_course_code = bool(re.search(r'\b[A-Z]{4}\d{4}\b', query, re.IGNORECASE))
+    if has_course_code \
+       or any(k in query_lower for k in ["course", "class", "subject", "module", "offering"]) \
+       or any(dt in doc_types for dt in ["course_description", "course_listing"]):
+        chosen = prompts.get("course_prompt", default_prompt)
+        logger.debug(f"Choosing prompt: {'course_prompt' if chosen != default_prompt else 'default_prompt (fallback)'}")
+        return chosen
 
-    # Check for course-related keywords or course_description/course_listing doc types
-    course_keywords = ["course", "class", "subject", "lecture", "module"]
-    course_doc_types = ["course_description", "course_listing"]
-    # Use regex to check for course code pattern IN QUERY as strong indicator
-    has_course_code_in_query = bool(re.search(r'\b[A-Z]{4}\d{4}\b', query, re.IGNORECASE))
+    # Add more specific prompt selection rules here based on keywords or doc_types
 
-    if has_course_code_in_query or any(keyword in query_lower for keyword in course_keywords) or any(dt in doc_types for dt in course_doc_types):
-        logger.debug("Choosing course prompt.")
-        return prompts.get("course_prompt", prompts.get("default_prompt")) # Fallback to default
-
-    # --- Optional: Logic to select Persona Prompt ---
-    # Example: Check if query asks for a specific user type perspective
-    # user_type_match = re.search(r'for (a|an) (\w+) user', query_lower)
-    # if user_type_match and "persona_prompt" in prompts:
-    #     user_type = user_type_match.group(2)
-    #     logger.debug(f"Choosing persona prompt for user type: {user_type}")
-    #     # Store user_type somewhere accessible before formatting the prompt,
-    #     # or modify how prompt.format() is called later.
-    #     # This requires more complex handling of input variables.
-    #     # For simplicity, we'll stick to the original three for now.
-    #     # return prompts["persona_prompt"]
-    # --- End Optional Persona Logic ---
-
-    # Default case
-    logger.debug("Choosing default prompt.")
-    return prompts.get("default_prompt") # Use .get() for safety
+    # Fallback to default
+    logger.debug("Choosing prompt: default_prompt")
+    return default_prompt
 
 def expand_query(query: str) -> List[str]:
-    """Simple query expansion function."""
-    # --- Keep this function as is ---
-    expanded = {query} # Use set for auto-deduplication
+    """Basic query expansion (stub). Implement more sophisticated expansion if needed."""
+    expanded = {query}
     query_lower = query.lower()
-
-    # General expansions
-    if " course" not in query_lower:
-         expanded.add(query + " courses")
-    if " requirement" not in query_lower and " prerequisite" not in query_lower:
-        expanded.add(query + " requirements")
-    if "student" in query_lower:
-         expanded.add(query.replace("student", "learner"))
-
-
-    # Expansion for course codes
-    course_code_match = re.search(r'\b([A-Z]{4}\d{4})\b', query, re.IGNORECASE)
-    if course_code_match:
-         code = course_code_match.group(1).upper()
-         expanded.add(f"information about {code}")
-         expanded.add(f"details for course {code}")
-         expanded.add(f"{code} prerequisites")
-         expanded.add(f"{code} course description")
-         expanded.add(f"{code} credits")
-
-    # Expansion for prerequisite queries
-    prereq_pattern = r'\b(?:pre[- ]?requisites?|requirements?)\b'
-    if re.search(prereq_pattern, query_lower):
-         # Try to extract course name/code if possible
-         parts = re.split(r' for | of ', query, maxsplit=1)
-         if len(parts) > 1:
-              subject = parts[1].strip('? ')
-              expanded.add(f"{subject} course details")
-              expanded.add(f"what is needed before {subject}")
-
+    # Example: Add "courses" if not present
+    if " course" not in query_lower and not query_lower.endswith(" course"):
+        expanded.add(query + " courses")
+    # Add more expansion logic here (synonyms, acronyms, etc.)
     return list(expanded)
 
-# ** REMOVED filter_documents_by_metadata function **
 
+import logging
+from typing import Tuple, Dict, Any, List, Optional
+from datetime import datetime # Keep if used for anything else, not strictly needed in this function now
 
-# --- API Endpoints ---
-@router.post("/query", response_model=QueryResponse)
-async def query_endpoint(request: QueryRequest):
+# Assuming User, EnrolledCourse, CourseGrade, Term, Course models are imported
+# and have the necessary attributes and relationships defined (e.g., grade.term, grade.course)
+try:
+    from user_db.models import User, EnrolledCourse, CourseGrade, Term, Course # Ensure these are correct
+except ImportError:
+     logging.warning("Could not import User model or related DB models. Type hinting may be affected.")
+     # Define placeholder types if models aren't available
+     User = Any
+     EnrolledCourse = Any
+     CourseGrade = Any
+     Term = Any
+     Course = Any
+
+logger = logging.getLogger(__name__)
+
+def extract_user_context(current_user: User) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
-    Process a natural language query against the document store and return a response.
-    Uses adaptive retrieval and dynamic document selection for optimal context.
+    Extracts user context by RECONSTRUCTING grades data from DB relationships
+    to ensure freshness. Formats one part to mirror /auth/me and another
+    part with flat fields for prompt formatting.
+
+    Accesses course_code, course_title, credit_hours directly from the
+    CourseGrade object based on the latest model information.
+
+    Returns:
+        Tuple[Dict[str, Any], Dict[str, Any]]:
+            - auth_me_like_context: Dictionary structured like the /auth/me response.
+            - prompt_fields: Dictionary with flat fields for LLM prompt formatting.
+    """
+    # Initialize the structure mirroring /auth/me
+    auth_me_like_context = {
+        "moodle_data": {
+            "user_info": {},
+            "courses": {"courses": [], "nextoffset": None}
+        },
+        "grades_status": {"fetched": False, "success": False, "error": "Initialization error."},
+        "grades_data": {
+            "student_name": "",
+            "student_id": "",
+            "terms": [],
+            "overall": {
+                "cumulative_gpa": None,
+                "degree_gpa": None,
+                "total_credits_earned": None
+            }
+        }
+    }
+
+    # Initialize the dictionary for prompt formatting fields
+    prompt_fields = {
+        "user_name": "N/A",
+        "student_id": "N/A",
+        "user_gpa": "N/A",
+        "total_credits": "N/A",
+        "user_courses_summary": "N/A",
+        "current_courses": [],
+        "grade_history": [],
+        "grades_data_raw": None
+    }
+
+    try:
+        # --- Populate User Info ---
+        user_name = f"{getattr(current_user, 'firstname', '')} {getattr(current_user, 'lastname', '')}".strip()
+        student_id = getattr(current_user, 'student_id', 'N/A')
+        email = getattr(current_user, 'email', 'N/A')
+
+        auth_me_like_context["moodle_data"]["user_info"] = {
+            "name": user_name,
+            "email": email,
+            "student_id": student_id
+        }
+        prompt_fields["user_name"] = user_name
+        prompt_fields["student_id"] = student_id
+
+        # --- Populate Moodle Courses (from enrollments relationship) ---
+        current_courses_list_for_prompt = []
+        if hasattr(current_user, 'enrollments') and current_user.enrollments:
+            for enrollment in current_user.enrollments:
+                 if hasattr(enrollment, 'course') and enrollment.course:
+                    course = enrollment.course
+                    # Map Course object fields to the MoodleDataOut structure
+                    course_data_auth = {
+                        "id": getattr(course, 'id', None),
+                        "fullname": getattr(course, 'fullname', "Unknown Course Name"),
+                        "shortname": getattr(course, 'shortname', None),
+                        "idnumber": getattr(course, 'idnumber', None),
+                        "summary": getattr(course, 'summary', None),
+                        "summaryformat": getattr(course, 'summaryformat', 1),
+                        "startdate": int(getattr(course, 'startdate', 0)),
+                        "enddate": int(getattr(course, 'enddate', 0)),
+                        "visible": getattr(course, 'visible', True),
+                        "showactivitydates": getattr(course, 'showactivitydates', False),
+                        "showcompletionconditions": getattr(course, 'showcompletionconditions', None),
+                        "fullnamedisplay": getattr(course, 'fullname', "Unknown Course Name"),
+                        "viewurl": f"/course/view.php?id={getattr(course, 'id', '')}",
+                        "coursecategory": getattr(course, 'coursecategory', "Unknown") # Check attribute name on Course model
+                    }
+                    auth_me_like_context["moodle_data"]["courses"]["courses"].append(course_data_auth)
+
+                    # Populate prompt_fields["current_courses"]
+                    shortname = getattr(course, 'shortname', "Unknown")
+                    code = shortname.split()[0] if shortname != "Unknown" else "Unknown" # Basic code extraction
+                    prompt_course_data = {
+                         "code": code,
+                         "name": getattr(course, 'fullname', "Unknown Course Name"),
+                         "id": getattr(course, 'id', None),
+                         "full_shortname": shortname,
+                         "idnumber": getattr(course, 'idnumber', None),
+                         "status": getattr(enrollment, 'status', 'Enrolled') # Assuming status on enrollment
+                     }
+                    current_courses_list_for_prompt.append(prompt_course_data)
+
+        prompt_fields["current_courses"] = current_courses_list_for_prompt
+        if current_courses_list_for_prompt:
+             prompt_fields["user_courses_summary"] = ", ".join([c.get("code", "Unknown") for c in current_courses_list_for_prompt])
+
+        # --- Populate Grades Data & Status ---
+        # Always reconstruct from relationships to ensure freshness and correct details.
+        grades_available = False
+        if hasattr(current_user, 'grades') and current_user.grades:
+            logger.info("Reconstructing grades_data from user DB relationships (terms/grades).")
+            grades_available = True
+            auth_me_like_context["grades_data"]["student_name"] = user_name
+            auth_me_like_context["grades_data"]["student_id"] = student_id
+            terms_dict = {} # To hold reconstructed terms {term_code: term_data}
+
+            # Pre-process terms if available to get term-level stats
+            if hasattr(current_user, 'terms') and current_user.terms:
+                for term in current_user.terms:
+                    term_code = getattr(term, 'term_code', 'UnknownTerm')
+                    terms_dict[term_code] = {
+                        "term_code": term_code, "courses": [],
+                        "semester_gpa": getattr(term, 'semester_gpa', None),
+                        "cumulative_gpa": getattr(term, 'cumulative_gpa', None),
+                        "degree_gpa": getattr(term, 'degree_gpa', None),
+                        "credits_earned_to_date": getattr(term, 'credits_earned_to_date', None)
+                    }
+
+            # --- Process Grades ---
+            grade_history_for_prompt = []
+            for grade in current_user.grades: # 'grade' is an instance of CourseGrade model
+                # Get Term Code from the relationship
+                term_obj = getattr(grade, 'term', None)
+                term_code = getattr(term_obj, 'term_code', 'UnknownTerm') if term_obj else 'UnknownTerm'
+
+                # --- FIXED SECTION ---
+                # Get code, title, and credits DIRECTLY from the CourseGrade object itself
+                # using the column names defined in the CourseGrade SQLAlchemy model
+                course_code = getattr(grade, 'course_code', "Unknown")
+                course_title = getattr(grade, 'course_title', "Unknown Title")
+                credit_hours = getattr(grade, 'credit_hours', 3.0) # Use 3.0 as default if null/missing
+
+                # --- End FIXED SECTION ---
+
+                # Create course entry for the nested grades_data structure
+                course_entry_auth = {
+                     "course_code": course_code,
+                     "course_title": course_title,
+                     "credit_hours": credit_hours,
+                     "grade_earned": getattr(grade, 'grade_earned', "NA"), # Get the actual grade earned
+                     "whatif_grade": getattr(grade, 'whatif_grade', None)  # Get the what-if grade
+                }
+
+                # Add course entry to the corresponding term in terms_dict
+                if term_code not in terms_dict:
+                     # Create term entry if it wasn't pre-loaded (e.g., only grades are available)
+                     terms_dict[term_code] = {
+                         "term_code": term_code, "courses": [],
+                         "semester_gpa": None, "cumulative_gpa": None,
+                         "degree_gpa": None, "credits_earned_to_date": None
+                     }
+                terms_dict[term_code]["courses"].append(course_entry_auth)
+
+                # --- Add to flat grade_history for prompt_fields ---
+                grade_history_for_prompt.append({
+                    "term": term_code,
+                    "course_code": course_code,
+                    "course_title": course_title,
+                    "credit_hours": credit_hours,
+                    "grade": course_entry_auth["grade_earned"] # Reflect the earned grade here
+                })
+
+            # Finalize the reconstructed grades_data for auth_me_like_context
+            auth_me_like_context["grades_data"]["terms"] = list(terms_dict.values())
+            # Sort terms consistently (e.g., reverse chronological, CURRENT first)
+            auth_me_like_context["grades_data"]["terms"].sort(
+                key=lambda t: ("0" if t.get("term_code") == "CURRENT" else str(t.get("term_code", "Z"))),
+                reverse=True
+            )
+
+            # Update prompt_fields with reconstructed data
+            prompt_fields["grade_history"] = grade_history_for_prompt
+            prompt_fields["grades_data_raw"] = auth_me_like_context["grades_data"] # Pass full structure
+
+            # Update status to reflect successful reconstruction
+            auth_me_like_context["grades_status"] = {"fetched": True, "success": True, "error": None}
+
+            # Extract overall GPA/Credits from the *most recent reconstructed term* for prompt_fields
+            reconstructed_non_current = [
+                t for t in auth_me_like_context["grades_data"]["terms"]
+                if t.get("term_code") != "CURRENT" and t.get("cumulative_gpa") is not None
+            ]
+            if reconstructed_non_current: # Already sorted, take the first one
+                recent_reconstructed_term = reconstructed_non_current[0]
+                prompt_fields["user_gpa"] = str(recent_reconstructed_term["cumulative_gpa"])
+                if recent_reconstructed_term.get("credits_earned_to_date") is not None:
+                     prompt_fields["total_credits"] = str(recent_reconstructed_term["credits_earned_to_date"])
+            else:
+                logger.warning(f"Could not determine overall GPA/Credits from reconstructed terms for user {student_id}.")
+
+
+        else: # No grade relationships found for reconstruction
+            logger.warning(f"No grade data relationships found for user {student_id}. Grades context will be empty.")
+            auth_me_like_context["grades_status"] = {"fetched": False, "success": False, "error": "No grade data available for user in DB relationships."}
+            auth_me_like_context["grades_data"]["student_name"] = user_name
+            auth_me_like_context["grades_data"]["student_id"] = student_id
+            prompt_fields["grades_data_raw"] = auth_me_like_context["grades_data"] # Pass empty structure
+
+
+    except Exception as e:
+        logger.error(f"Error during user context extraction for user {student_id}: {e}", exc_info=True)
+        # Set error status, but try to return basic structure
+        auth_me_like_context["grades_status"] = {"fetched": False, "success": False, "error": f"Internal server error during context extraction: {e}"}
+        # Ensure basic info is populated even on error
+        if not auth_me_like_context["moodle_data"]["user_info"]:
+             auth_me_like_context["moodle_data"]["user_info"] = {"name": "Error", "email": "Error", "student_id": "Error"}
+        if not auth_me_like_context["grades_data"]["student_name"]:
+             auth_me_like_context["grades_data"]["student_name"] = user_name if 'user_name' in locals() else "Error"
+             auth_me_like_context["grades_data"]["student_id"] = student_id if 'student_id' in locals() else "Error"
+
+    # Return both the /auth/me structured data and the flat fields for prompt formatting
+    return auth_me_like_context, prompt_fields
+
+# --- UPDATED: /rag/query Endpoint ---
+@router.post("/query", response_model=QueryResponse)
+async def query_endpoint(
+    request: QueryRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Process a natural language query against the document store,
+    inject full user context (including grade_history_json),
+    and return the LLM answer plus context & user_context.
     """
     start_time = time.perf_counter()
     user_query = request.query.strip()
     if not user_query:
-         raise HTTPException(status_code=400, detail="Query cannot be empty.")
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
-    logger.info(f"Received query: '{user_query}'")
+    logger.info(f"Received query from user {current_user.id} ({getattr(current_user,'student_id','UNKNOWN')}): '{user_query}'")
 
+    # 1. Load retriever, LLM, prompts
+    ensemble_ret = get_ensemble_retriever()
+    llm          = get_llm()
+    if not ensemble_ret:
+        raise HTTPException(status_code=503, detail="Retriever service unavailable.")
+    if not llm:
+        raise HTTPException(status_code=503, detail="LLM service unavailable.")
+    prompts = get_prompts_dict()
+
+    # 2. Query analysis & expansion
+    analysis_start = time.perf_counter()
+    is_course_code_query = bool(re.search(r'\b[A-Z]{4}\d{4}\b', user_query, re.IGNORECASE))
+    is_complex_query     = len(user_query.split()) >= 10
+    prereq_pattern       = r'\b(?:pre[- ]?requisites?|requirements?)\b'
+    is_requirement_query = bool(re.search(prereq_pattern, user_query.lower())) \
+                            or any(w in user_query.lower() for w in ["credit","graduate","policy","rule","eligible"])
+    should_expand = True
+    if is_course_code_query and any(kw in user_query.lower() for kw in ["credit","title","name","number"]):
+        should_expand = False
+        logger.info("Specific course‐info query detected; skipping expansion.")
+    expanded_queries = expand_query(user_query) if should_expand else [user_query]
+    analysis_time = time.perf_counter() - analysis_start
+    logger.info(f"Query analysis took {analysis_time:.2f}s → {expanded_queries}")
+
+    # 3. Retrieval
+    retrieval_start = time.perf_counter()
+    all_initial_docs = []
+    for eq in expanded_queries:
+        try:
+            docs_for_eq = ensemble_ret.get_relevant_documents(eq)
+            all_initial_docs.extend(docs_for_eq)
+        except Exception as e:
+            logger.error(f"Error retrieving for '{eq}': {e}")
+    retrieval_time = time.perf_counter() - retrieval_start
+    logger.info(f"Retrieved {len(all_initial_docs)} docs in {retrieval_time:.2f}s")
+
+    # 4. Deduplication
+    dedup_start = time.perf_counter()
     try:
-        # Get necessary components
-        ensemble_ret = get_ensemble_retriever()
-        llm = get_llm()
-        if not ensemble_ret:
-             logger.error("Ensemble retriever is not initialized.")
-             raise HTTPException(status_code=503, detail="Retriever service unavailable.")
-        if not llm:
-             logger.error("LLM is not initialized.")
-             raise HTTPException(status_code=503, detail="LLM service unavailable.")
+        from .retrievers import get_doc_id as get_consistent_doc_id
+    except ImportError:
+        get_consistent_doc_id = lambda d: getattr(d, 'id', id(d))
+    unique_docs_map = {}
+    for doc in all_initial_docs:
+        doc_id = get_consistent_doc_id(doc)
+        unique_docs_map.setdefault(doc_id, doc)
+    initial_docs = list(unique_docs_map.values())
+    dedup_time = time.perf_counter() - dedup_start
+    logger.info(f"Deduplicated to {len(initial_docs)} docs in {dedup_time:.2f}s")
 
-        # --- MODIFICATION: Load prompts from the imported function ---
-        try:
-            prompts = get_prompts_dict()
-            # Optional but recommended: Check if essential prompts are present
-            if not prompts.get("default_prompt") or not prompts.get("credit_prompt") or not prompts.get("course_prompt"):
-                 raise ValueError("Core prompt templates (default, credit, course) are missing from prompts dictionary.")
-            # Ensure the default prompt exists if others are missing and chosen as fallback
-            if not prompts.get("default_prompt"):
-                raise ValueError("Default prompt template is missing.")
-        except Exception as e:
-            logger.error(f"Failed to load prompts dictionary: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Internal error loading prompt templates.")
-        # --- END MODIFICATION ---
-
-
-        # === RAG Pipeline Stages ===
-
-        # 1. Query Analysis & Expansion
-        analysis_start = time.perf_counter()
-        is_course_code_query = bool(re.search(r'\b[A-Z]{4}\d{4}\b', user_query, re.IGNORECASE))
-        is_complex_query = len(user_query.split()) >= 10
-        prereq_pattern = r'\b(?:pre[- ]?requisites?|requirements?)\b'
-        is_requirement_query = bool(re.search(prereq_pattern, user_query.lower())) or \
-                                 any(word in user_query.lower() for word in ["credit", "graduate", "policy", "rule", "eligible"])
-
-        should_expand = True
-        if is_course_code_query and any(kw in user_query.lower() for kw in ["credit", "title", "name", "number"]):
-              should_expand = False
-              logger.info("Specific course info query detected, using exact query.")
-
-        if should_expand:
-              expanded_queries = expand_query(user_query)
-              logger.info(f"Using expanded queries: {expanded_queries}")
-        else:
-              expanded_queries = [user_query]
-        analysis_time = time.perf_counter() - analysis_start
-
-
-        # 2. Retrieval
-        retrieval_start = time.perf_counter()
-        all_initial_docs = []
-        # Consider using ThreadPoolExecutor for concurrent retrieval if needed
-        for eq in expanded_queries:
-            try:
-                docs_for_eq = ensemble_ret.get_relevant_documents(eq)
-                all_initial_docs.extend(docs_for_eq)
-                # Reduced logging verbosity for retrieval per query
-                # logger.info(f"Retrieved {len(docs_for_eq)} documents for expanded query: '{eq}'")
-            except Exception as e:
-                 logger.error(f"Error retrieving documents for specific query '{eq}': {e}", exc_info=True)
-        retrieval_time = time.perf_counter() - retrieval_start
-        logger.info(f"Retrieval phase took {retrieval_time:.2f}s for {len(expanded_queries)} queries.")
-
-
-        # 3. Deduplication
-        dedup_start = time.perf_counter()
-        unique_docs_map = {}
-        try:
-            # Import the helper function if moved to retrievers.py
-            from .retrievers import get_doc_id as get_consistent_doc_id
-        except ImportError:
-            # Fallback or define locally if needed
-            def get_consistent_doc_id(doc):
-                doc_metadata = getattr(doc, 'metadata', {})
-                doc_id = getattr(doc, 'id', None) or doc_metadata.get('id', None)
-                if not doc_id:
-                    source_file = doc_metadata.get("source_file", "unknown")
-                    chunk_index = doc_metadata.get("chunk_index", -1)
-                    doc_id = f"{source_file}_{chunk_index}" if chunk_index != -1 else id(doc)
-                return doc_id
-
-        for doc in all_initial_docs:
-            doc_id = get_consistent_doc_id(doc)
-            if doc_id not in unique_docs_map:
-                unique_docs_map[doc_id] = doc
-        initial_docs = list(unique_docs_map.values())
-        dedup_time = time.perf_counter() - dedup_start
-        logger.info(f"Retrieved {len(initial_docs)} unique documents initially (dedup took {dedup_time:.2f}s).")
-
-        if not initial_docs:
-              logger.warning("No documents found after initial retrieval and deduplication.")
-              return QueryResponse(
-                  answer="I could not find any relevant documents based on your query.",
-                  processing_time=time.perf_counter() - start_time,
-                  context="No relevant documents found."
-              )
-
-        # ** Step 4 Removed (Metadata Filtering) **
-        # initial_docs now flows directly to re-ranking
-
-        # 5. Re-ranking with Cross-Encoder
-        rerank_start = time.perf_counter()
-        try:
-              # Pass initial_docs directly to the re-ranker
-              reranked_docs = rerank_with_crossencoder(user_query, initial_docs)
-        except Exception as e:
-            logger.error(f"Error during cross-encoder reranking: {e}. Skipping reranking.", exc_info=True)
-            reranked_docs = initial_docs # Fallback to deduplicated list
-        rerank_time = time.perf_counter() - rerank_start
-        logger.info(f"Cross-encoder reranking took {rerank_time:.2f} seconds. Reranked {len(reranked_docs)} docs.")
-
-
-        # 6. Dynamic Context Size Selection
-        context_doc_count = 10
-        if is_course_code_query:
-            context_doc_count = 8
-            logger.info(f"Using document count {context_doc_count} for course code query")
-        elif is_complex_query:
-            context_doc_count = 15
-            logger.info(f"Using document count {context_doc_count} for complex query")
-        elif is_requirement_query:
-            context_doc_count = 15
-            logger.info(f"Using document count {context_doc_count} for requirement query")
-        else:
-             logger.info(f"Using default document count {context_doc_count}")
-
-
-        # 7. Smart Document Selection (Keep Diversity Logic)
-        selection_start = time.perf_counter()
-        # Select final docs based on reranked order and diversity logic
-        candidates_count = min(context_doc_count * 2, len(reranked_docs))
-        top_candidates = reranked_docs[:candidates_count]
-
-        selected_docs = []
-        if top_candidates:
-              # Simplified diversity selection - take top N unique sources up to limit
-              # This might be less diverse than previous but simpler
-              seen_sources = set()
-              for doc in top_candidates:
-                   if len(selected_docs) >= context_doc_count: break
-                   source = doc.metadata.get("source_file", "unknown")
-                   if source not in seen_sources or len(selected_docs) < (context_doc_count // 2): # Prefer new sources or fill half
-                        selected_docs.append(doc)
-                        seen_sources.add(source)
-
-              # If still not enough, fill remaining slots by rank
-              if len(selected_docs) < context_doc_count:
-                   needed = context_doc_count - len(selected_docs)
-                   current_ids = {get_consistent_doc_id(d) for d in selected_docs}
-                   for doc in top_candidates:
-                        if needed == 0: break
-                        if get_consistent_doc_id(doc) not in current_ids:
-                             selected_docs.append(doc)
-                             needed -= 1
-
-        # Ensure final list is sorted by original reranked order
-        top_docs = sorted(selected_docs, key=lambda d: reranked_docs.index(d) if d in reranked_docs else float('inf'))
-
-        selection_time = time.perf_counter() - selection_start
-        logger.info(f"Smart document selection took {selection_time:.2f} seconds.")
-        logger.info(f"Selected {len(top_docs)} documents for LLM context.")
-
-
-        # 8. Classify and Enrich Final Documents
-        enrichment_start = time.perf_counter()
-        enriched_docs = classify_and_enrich_documents(top_docs, user_query)
-        doc_type_counts_context = {}
-        for doc in enriched_docs:
-            doc_type = doc.metadata.get("doc_type", "general")
-            doc_type_counts_context[doc_type] = doc_type_counts_context.get(doc_type, 0) + 1
-        enrichment_time = time.perf_counter() - enrichment_start
-        logger.info(f"Document enrichment took {enrichment_time:.2f} seconds")
-        logger.info(f"Final context document type distribution: {doc_type_counts_context}")
-
-
-        # 9. Format Context for LLM
-        formatting_start = time.perf_counter()
-        formatted_context = format_documents_for_llm(enriched_docs)
-        formatting_time = time.perf_counter() - formatting_start
-        logger.info(f"Document formatting took {formatting_time:.2f} seconds")
-        context_tokens = len(formatted_context.split()) # Rough estimate
-        logger.info(f"Formatted context size: approx {context_tokens} tokens.")
-
-
-        # 10. Choose Prompt Template
-        prompt_selection_start = time.perf_counter()
-        # `get_chosen_prompt` now uses the `prompts` dict loaded from prompts.py
-        chosen_prompt_object = get_chosen_prompt(user_query, enriched_docs, prompts)
-        if not chosen_prompt_object: # Safety check
-            logger.error("Failed to select a valid prompt template. Falling back to basic query.")
-            chosen_prompt_object = prompts.get("default_prompt") # Ensure default exists
-            if not chosen_prompt_object: # Final fallback if even default is missing
-                 raise HTTPException(status_code=500, detail="Default prompt template missing.")
-
-        prompt_name = "unknown"
-        for name, prompt_obj in prompts.items():
-             if prompt_obj is chosen_prompt_object:
-                 prompt_name = name
-                 break
-        prompt_selection_time = time.perf_counter() - prompt_selection_start
-        logger.info(f"Using prompt template: '{prompt_name}' (selection took {prompt_selection_time:.2f} seconds)")
-
-        try:
-            # Check if it's a LangChain PromptTemplate object or just a string
-            if hasattr(chosen_prompt_object, 'format'):
-                # It's likely a PromptTemplate object
-                 prompt_str = chosen_prompt_object.format(context=formatted_context, question=user_query)
-                 # TODO: Handle PERSONA_PROMPT case if implemented in get_chosen_prompt
-                 # if prompt_name == "persona_prompt":
-                 #     user_type = "student" # Example: Get user_type from request or logic
-                 #     prompt_str = chosen_prompt_object.format(context=formatted_context, question=user_query, user_type=user_type)
-
-            elif isinstance(chosen_prompt_object, str):
-                 # It's a raw string template
-                 prompt_str = chosen_prompt_object.format(context=formatted_context, question=user_query)
-            else:
-                 raise TypeError(f"Loaded prompt '{prompt_name}' is neither a format-able string nor a PromptTemplate.")
-
-        except KeyError as e:
-             logger.error(f"Error formatting prompt '{prompt_name}'. Missing key: {e}")
-             raise HTTPException(status_code=500, detail="Internal error formatting LLM prompt.")
-        except Exception as e:
-             logger.error(f"Unexpected error formatting prompt '{prompt_name}': {e}", exc_info=True)
-             raise HTTPException(status_code=500, detail="Internal error formatting LLM prompt.")
-
-        prompt_tokens = len(prompt_str.split()) # Rough estimate
-        logger.info(f"Final prompt size: approx {prompt_tokens} tokens.")
-
-
-        # 11. Call the LLM
-        llm_start = time.perf_counter()
-        try:
-            # Use invoke for LangChain interface consistency if applicable
-            # If using older callable interface: answer = llm(prompt_str)
-            # Assuming llm is a LangChain Runnable (LCEL standard)
-            answer = llm.invoke(prompt_str)
-            # If invoke returns an object (like AIMessage), extract content
-            if hasattr(answer, 'content'):
-                final_answer = answer.content
-            elif isinstance(answer, str):
-                final_answer = answer
-            else:
-                logger.warning(f"LLM returned unexpected type: {type(answer)}. Converting to string.")
-                final_answer = str(answer)
-
-        except Exception as e:
-             logger.error(f"Error calling LLM: {e}", exc_info=True)
-             raise HTTPException(status_code=503, detail=f"LLM service generated an error: {e}")
-        llm_time = time.perf_counter() - llm_start
-        logger.info(f"LLM generation took {llm_time:.2f} seconds")
-
-
-        # 12. Prepare Response
-        total_processing_time = time.perf_counter() - start_time
-        logger.info(f"Total processing time for query '{user_query}': {total_processing_time:.2f} seconds")
-
-        # Optionally capture debug weights
-        debug_weights = {}
-        # Ensure correct import path for AdaptiveEnsembleRetriever
-        try:
-             from .retrievers import AdaptiveEnsembleRetriever
-             if isinstance(ensemble_ret, AdaptiveEnsembleRetriever):
-                  debug_weights = ensemble_ret._get_weights_for_query(user_query)
-        except (ImportError, AttributeError, Exception) as e:
-             logger.warning(f"Could not capture debug weights: {e}")
-
-
-        # 13. Return Final Response
+    if not initial_docs:
+        # No docs → early return, include user_context
+        auth_ctx, _ = extract_user_context(current_user)
         return QueryResponse(
-            answer=final_answer.strip(),
-            processing_time=total_processing_time,
-            context=formatted_context, # Send back the context used
-            # Add debug weights if your model includes it and you want it
-            # debug_weights=debug_weights
+            answer="I could not find any relevant documents based on your query.",
+            processing_time=time.perf_counter() - start_time,
+            context="No relevant documents found.",
+            user_context=auth_ctx
         )
 
-    except HTTPException:
-        raise # Re-raise HTTP exceptions
+    # 5. Extract & serialize user context
+    auth_me_like_context, prompt_fields = extract_user_context(current_user)
+    prompt_fields["grade_history_json"] = json.dumps(
+        prompt_fields.get("grade_history", []), ensure_ascii=False
+    )
+
+    # 6. Re‑ranking
+    rerank_start = time.perf_counter()
+    try:
+        reranked_docs = rerank_with_crossencoder(user_query, initial_docs)
+    except Exception:
+        reranked_docs = initial_docs
+    rerank_time = time.perf_counter() - rerank_start
+    logger.info(f"Re-ranked in {rerank_time:.2f}s")
+
+    # 7. Dynamic context size selection
+    context_doc_count = 10
+    if is_course_code_query:
+        context_doc_count = 8
+    elif is_complex_query or is_requirement_query:
+        context_doc_count = 15
+    logger.info(f"Using context_doc_count={context_doc_count}")
+
+    # 8. Smart document selection (diversity)
+    selection_start = time.perf_counter()
+    candidates_count = min(context_doc_count * 2, len(reranked_docs))
+    top_candidates   = reranked_docs[:candidates_count]
+    selected_docs    = []
+    seen_sources     = set()
+    for doc in top_candidates:
+        if len(selected_docs) >= context_doc_count:
+            break
+        source = doc.metadata.get("source_file", "unknown")
+        if source not in seen_sources or len(selected_docs) < (context_doc_count // 2):
+            selected_docs.append(doc)
+            seen_sources.add(source)
+    if len(selected_docs) < context_doc_count:
+        needed = context_doc_count - len(selected_docs)
+        current_ids = {get_consistent_doc_id(d) for d in selected_docs}
+        for doc in top_candidates:
+            if needed == 0:
+                break
+            did = get_consistent_doc_id(doc)
+            if did not in current_ids:
+                selected_docs.append(doc)
+                needed -= 1
+    top_docs = sorted(selected_docs, key=lambda d: reranked_docs.index(d))
+    selection_time = time.perf_counter() - selection_start
+    logger.info(f"Selected {len(top_docs)} docs in {selection_time:.2f}s")
+
+    # 9. Classify & enrich
+    enrichment_start = time.perf_counter()
+    enriched_docs = classify_and_enrich_documents(top_docs, user_query)
+    enrichment_time = time.perf_counter() - enrichment_start
+    logger.info(f"Enriched docs in {enrichment_time:.2f}s")
+
+    # 10. Format for LLM
+    formatting_start = time.perf_counter()
+    formatted_context = format_documents_for_llm(enriched_docs)
+    formatting_time = time.perf_counter() - formatting_start
+    logger.info(f"Formatted context in {formatting_time:.2f}s")
+
+    # 11. Choose & build prompt
+    prompt_selection_start = time.perf_counter()
+    chosen_prompt_object = get_chosen_prompt(user_query, enriched_docs, prompts)
+    if not chosen_prompt_object:
+        chosen_prompt_object = prompts.get("default_prompt")
+    prompt_name = next((n for n,p in prompts.items() if p is chosen_prompt_object), "unknown")
+    prompt_selection_time = time.perf_counter() - prompt_selection_start
+    logger.info(f"Using prompt '{prompt_name}' ({prompt_selection_time:.2f}s)")
+
+    # Prepare format_args
+    format_args = {
+        "context": formatted_context,
+        "question": user_query,
+        "current_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z"),
+        **prompt_fields
+    }
+
+    try:
+        if hasattr(chosen_prompt_object, 'input_variables'):
+            valid = {k: format_args[k] for k in chosen_prompt_object.input_variables if k in format_args}
+            for var in chosen_prompt_object.input_variables:
+                valid.setdefault(var, "N/A")
+            prompt_str = chosen_prompt_object.format(**valid)
+        else:
+            prompt_str = chosen_prompt_object.format(**format_args)
+    except KeyError as e:
+        logger.error(f"Missing key {e} in prompt formatting")
+        raise HTTPException(status_code=500, detail=f"Internal error: missing key {e}")
     except Exception as e:
-        logger.error(f"Unexpected error processing query '{user_query}': {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An unexpected internal error occurred.")
+        logger.error(f"Error formatting prompt: {e}")
+        raise HTTPException(status_code=500, detail="Internal error formatting prompt")
+
+    # 12. Call LLM
+    llm_start = time.perf_counter()
+    try:
+        answer_obj = llm.invoke(prompt_str)
+        final_answer = getattr(answer_obj, 'content', str(answer_obj))
+    except Exception as e:
+        logger.error(f"LLM call failed: {e}")
+        raise HTTPException(status_code=503, detail=f"LLM service error: {e}")
+    llm_time = time.perf_counter() - llm_start
+    logger.info(f"LLM generation took {llm_time:.2f}s")
+
+    # 13. Return response
+    total_time = time.perf_counter() - start_time
+    logger.info(f"Total processing time: {total_time:.2f}s")
+    return QueryResponse(
+        answer=final_answer.strip(),
+        processing_time=total_time,
+        context=formatted_context,
+        user_context=auth_me_like_context
+    )
 
 
+# --- UPDATED: /rag/stream_query Endpoint ---
 @router.post("/stream_query")
-async def stream_query_endpoint(request: QueryRequest):
+async def stream_query_endpoint(
+    request: QueryRequest,
+    current_user: User = Depends(get_current_user)
+):
     """
-    Process a query and stream the LLM response back using Server-Sent Events.
+    Stream a query using the same RAG pipeline as /query
+    (including full grade_history_json), streaming back chunks
+    then a final ‘end’ event with processing_time and user_context.
     """
     user_query = request.query.strip()
     if not user_query:
-        # Raise HTTPExceptions before starting the stream generator.
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
-    logger.info(f"Received streaming query: '{user_query}'")
-
-    # Define the async generator function that will produce the stream content
     async def stream_generator():
         start_time = time.perf_counter()
+
+        # 1. Load components
+        ensemble_ret = get_ensemble_retriever()
+        llm          = get_llm()
+        if not ensemble_ret or not llm or not hasattr(llm, "stream"):
+            yield f"event: error\ndata: {{\"detail\":\"Retriever or LLM unavailable/doesn't support streaming.\"}}\n\n"
+            return
+        prompts = get_prompts_dict()
+
+        # 2→8. Use the identical pipeline up through formatting
+        # (copy the same steps 2–10 from the /query handler above)
+        # ------------ expand, retrieve, dedupe ------------
+        # analysis
+        is_course_code_query = bool(re.search(r'\b[A-Z]{4}\d{4}\b', user_query, re.IGNORECASE))
+        is_complex_query     = len(user_query.split()) >= 10
+        prereq_pattern       = r'\b(?:pre[- ]?requisites?|requirements?)\b'
+        is_requirement_query = bool(re.search(prereq_pattern, user_query.lower())) or any(
+            w in user_query.lower() for w in ["credit","graduate","policy","rule","eligible"]
+        )
+        should_expand = not (is_course_code_query and any(
+            kw in user_query.lower() for kw in ["credit","title","name","number"]
+        ))
+        expanded_queries = expand_query(user_query) if should_expand else [user_query]
+
+        all_docs = []
+        for eq in expanded_queries:
+            try:
+                all_docs.extend(ensemble_ret.get_relevant_documents(eq))
+            except:
+                pass
+
         try:
-            # --- Perform all RAG steps BEFORE starting the LLM stream ---
-            # Get necessary components (same as non-streaming endpoint)
-            ensemble_ret = get_ensemble_retriever()
-            llm = get_llm() # This should now be your stream-capable LLM instance
-            if not ensemble_ret:
-                logger.error("Ensemble retriever is not initialized.")
-                # Yield an error event for the client
-                yield f"event: error\ndata: {json.dumps({'detail': 'Retriever service unavailable.'})}\n\n"
-                return # Stop generation
-            if not llm:
-                logger.error("LLM is not initialized.")
-                yield f"event: error\ndata: {json.dumps({'detail': 'LLM service unavailable.'})}\n\n"
-                return
+            from .retrievers import get_doc_id as get_consistent_doc_id
+        except ImportError:
+            get_consistent_doc_id = lambda d: getattr(d,'id',id(d))
+        unique_map = {}
+        for d in all_docs:
+            unique_map.setdefault(get_consistent_doc_id(d), d)
+        initial_docs = list(unique_map.values())
+        if not initial_docs:
+            auth_ctx, _ = extract_user_context(current_user)
+            payload = {
+                "answer": "",
+                "processing_time": time.perf_counter()-start_time,
+                "context": "No relevant documents found.",
+                "user_context": auth_ctx
+            }
+            yield f"event: end\ndata: {json.dumps(payload)}\n\n"
+            return
 
-            # Ensure LLM supports streaming (optional but good practice)
-            # Note: Even if it supports .stream(), it might return a sync generator as seen before.
-            if not hasattr(llm, 'stream'):
-                 logger.error("Current LLM does not support the .stream() method.")
-                 yield f"event: error\ndata: {json.dumps({'detail': 'LLM does not support streaming.'})}\n\n"
-                 return
+        # extract user context
+        auth_ctx, prompt_fields = extract_user_context(current_user)
+        prompt_fields["grade_history_json"] = json.dumps(
+            prompt_fields.get("grade_history", []), ensure_ascii=False
+        )
 
-            # --- MODIFICATION: Load prompts from the imported function ---
-            try:
-                prompts = get_prompts_dict()
-                # Optional check for core prompts
-                if not prompts.get("default_prompt") or not prompts.get("credit_prompt") or not prompts.get("course_prompt"):
-                    raise ValueError("Core prompt templates (default, credit, course) are missing.")
-                if not prompts.get("default_prompt"):
-                     raise ValueError("Default prompt template is missing.")
-            except Exception as e:
-                logger.error(f"Failed to load prompts dictionary for streaming: {e}", exc_info=True)
-                yield f"event: error\ndata: {json.dumps({'detail': 'Internal error loading prompt templates.'})}\n\n"
-                return
-            # --- END MODIFICATION ---
-
-            # === RAG Pipeline Stages (Synchronous Part - Run before streaming LLM) ===
-            # Note: Use `await asyncio.to_thread(...)` for slow sync functions if needed.
-
-            # 1. Query Analysis & Expansion (Using simplified logic from your example)
-            analysis_start = time.perf_counter()
-            is_course_code_query = bool(re.search(r'\b[A-Z]{4}\d{4}\b', user_query, re.IGNORECASE))
-            is_complex_query = len(user_query.split()) >= 10
-            prereq_pattern = r'\b(?:pre[- ]?requisites?|requirements?)\b'
-            is_requirement_query = bool(re.search(prereq_pattern, user_query.lower())) or \
-                                     any(word in user_query.lower() for word in ["credit", "graduate", "policy", "rule", "eligible"])
-            should_expand = True # Adjust this logic as needed
-            if should_expand:
-                 expanded_queries = expand_query(user_query)
-            else:
-                 expanded_queries = [user_query]
-            analysis_time = time.perf_counter() - analysis_start
-            logger.info(f"Stream Query Analysis took {analysis_time:.2f}s")
-
-            # 2. Retrieval
-            retrieval_start = time.perf_counter()
-            all_initial_docs = []
-            for eq in expanded_queries:
-                # Assuming get_relevant_documents is sync. Use asyncio.to_thread if slow.
-                docs_for_eq = ensemble_ret.get_relevant_documents(eq)
-                all_initial_docs.extend(docs_for_eq)
-            retrieval_time = time.perf_counter() - retrieval_start
-            logger.info(f"Stream Retrieval phase took {retrieval_time:.2f}s")
-
-            # 3. Deduplication
-            dedup_start = time.perf_counter()
-            try: # Ensure consistent import or definition of get_consistent_doc_id
-                from .retrievers import get_doc_id as get_consistent_doc_id
-            except ImportError:
-                 def get_consistent_doc_id(doc): # Basic fallback
-                    doc_metadata = getattr(doc, 'metadata', {})
-                    doc_id = getattr(doc, 'id', None) or doc_metadata.get('id', None)
-                    if not doc_id:
-                         source_file = doc_metadata.get("source_file", "unknown")
-                         chunk_index = doc_metadata.get("chunk_index", -1)
-                         doc_id = f"{source_file}_{chunk_index}" if chunk_index != -1 else id(doc)
-                    return doc_id
-            unique_docs_map = {}
-            for doc in all_initial_docs:
-                 doc_id = get_consistent_doc_id(doc)
-                 if doc_id not in unique_docs_map:
-                      unique_docs_map[doc_id] = doc
-            initial_docs = list(unique_docs_map.values())
-            dedup_time = time.perf_counter() - dedup_start
-            logger.info(f"Stream Dedup took {dedup_time:.2f}s. {len(initial_docs)} unique docs.")
-
-            if not initial_docs:
-                logger.warning("No documents found for streaming query.")
-                yield f"event: message\ndata: {json.dumps({'text': 'I could not find any relevant documents based on your query.', 'type': 'no_docs'})}\n\n"
-                # Send end event even if no docs found
-                processing_time_no_docs = time.perf_counter() - start_time
-                yield f"event: end\ndata: {json.dumps({'processing_time': processing_time_no_docs})}\n\n"
-                return
-
-            # 5. Re-ranking
-            rerank_start = time.perf_counter()
-            # Assuming rerank_with_crossencoder is sync. Use asyncio.to_thread if slow.
+        # rerank
+        try:
             reranked_docs = rerank_with_crossencoder(user_query, initial_docs)
-            rerank_time = time.perf_counter() - rerank_start
-            logger.info(f"Stream Re-ranking took {rerank_time:.2f}s.")
+        except:
+            reranked_docs = initial_docs
 
-            # 6. Dynamic Context Size Selection
-            context_doc_count = 10 # Example default
-            if is_course_code_query: context_doc_count = 8
-            elif is_complex_query: context_doc_count = 15
-            elif is_requirement_query: context_doc_count = 15
-            # Add other conditions as needed
+        # dynamic size
+        N = 10
+        if is_course_code_query:    N = 8
+        elif is_complex_query:      N = 15
+        elif is_requirement_query:  N = 15
 
-            # 7. Smart Document Selection (using simplified selection from your example)
-            selection_start = time.perf_counter()
-            # Consider your more complex diversity logic if needed
-            top_docs = reranked_docs[:context_doc_count] # Simplified: just take top N after reranking
-            selection_time = time.perf_counter() - selection_start
-            logger.info(f"Stream Doc selection took {selection_time:.2f}s. Selected {len(top_docs)} docs.")
+        # diversity selection
+        candidates = reranked_docs[: min(len(reranked_docs), N*2) ]
+        selected = []
+        seen = set()
+        for d in candidates:
+            if len(selected) >= N: break
+            src = d.metadata.get("source_file","unknown")
+            if src not in seen or len(selected) < (N//2):
+                selected.append(d)
+                seen.add(src)
+        if len(selected) < N:
+            needed = N - len(selected)
+            current_ids = {get_consistent_doc_id(d) for d in selected}
+            for d in candidates:
+                if needed == 0: break
+                did = get_consistent_doc_id(d)
+                if did not in current_ids:
+                    selected.append(d)
+                    needed -= 1
+        top_docs = sorted(selected, key=lambda d: reranked_docs.index(d))
 
-            # 8. Classify and Enrich Final Documents
-            enrichment_start = time.perf_counter()
-            enriched_docs = classify_and_enrich_documents(top_docs, user_query)
-            enrichment_time = time.perf_counter() - enrichment_start
-            logger.info(f"Stream Enrichment took {enrichment_time:.2f}s")
+        # classify, enrich, format
+        enriched = classify_and_enrich_documents(top_docs, user_query)
+        formatted_context = format_documents_for_llm(enriched)
 
-            # 9. Format Context for LLM
-            formatting_start = time.perf_counter()
-            formatted_context = format_documents_for_llm(enriched_docs)
-            formatting_time = time.perf_counter() - formatting_start
-            logger.info(f"Stream Formatting took {formatting_time:.2f}s")
+        # build prompt
+        chosen = get_chosen_prompt(user_query, enriched, prompts)
+        format_args = {
+            "context": formatted_context,
+            "question": user_query,
+            "current_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z"),
+            **prompt_fields
+        }
+        if hasattr(chosen, "input_variables"):
+            valid = {k:format_args[k] for k in chosen.input_variables if k in format_args}
+            for v in chosen.input_variables: valid.setdefault(v, "N/A")
+            prompt_str = chosen.format(**valid)
+        else:
+            prompt_str = chosen.format(**format_args)
 
-            # (Optional: Send context event - useful for debugging on client)
-            # context_payload = json.dumps({"context": formatted_context}) # Careful with large contexts
-            # yield f"event: context\ndata: {context_payload}\n\n"
-            # await asyncio.sleep(0.01)
+        # 9. Stream LLM
+        for chunk in llm.stream(prompt_str):
+            text = getattr(chunk, "content", chunk if isinstance(chunk, str) else chunk.get("text",""))
+            if text:
+                sse = json.dumps({"text": text, "type": "chunk"})
+                yield f"event: message\ndata: {sse}\n\n"
+                await asyncio.sleep(0.001)
 
-            # 10. Choose Prompt Template
-            prompt_selection_start = time.perf_counter()
-            chosen_prompt_object = get_chosen_prompt(user_query, enriched_docs, prompts)
-            if not chosen_prompt_object: # Safety check
-                logger.error("Stream: Failed to select a valid prompt template. Falling back to basic query.")
-                chosen_prompt_object = prompts.get("default_prompt")
-                if not chosen_prompt_object:
-                     yield f"event: error\ndata: {json.dumps({'detail': 'Default prompt template missing.'})}\n\n"
-                     return
+        # 10. End event
+        total = time.perf_counter() - start_time
+        yield f"event: end\ndata: {json.dumps({'processing_time': total, 'user_context': auth_ctx})}\n\n"
 
-            prompt_name = "unknown" # Find name for logging
-            for name, prompt_obj in prompts.items():
-                 if prompt_obj is chosen_prompt_object: prompt_name = name; break
-            prompt_selection_time = time.perf_counter() - prompt_selection_start
-            logger.info(f"Stream Prompt selection ('{prompt_name}') took {prompt_selection_time:.2f}s")
-
-            # 11. Format Final Prompt String
-            try:
-                # Similar logic as in non-streaming endpoint to handle PromptTemplate vs string
-                if hasattr(chosen_prompt_object, 'format'):
-                    prompt_str = chosen_prompt_object.format(context=formatted_context, question=user_query)
-                elif isinstance(chosen_prompt_object, str):
-                    prompt_str = chosen_prompt_object.format(context=formatted_context, question=user_query)
-                else:
-                    raise TypeError(f"Loaded prompt '{prompt_name}' is neither a format-able string nor a PromptTemplate.")
-            except KeyError as e:
-                 logger.error(f"Error formatting streaming prompt '{prompt_name}'. Missing key: {e}")
-                 yield f"event: error\ndata: {json.dumps({'detail': f'Internal error formatting LLM prompt: Missing key {e}'})}\n\n"
-                 return
-            except Exception as e:
-                logger.error(f"Unexpected error formatting streaming prompt '{prompt_name}': {e}", exc_info=True)
-                yield f"event: error\ndata: {json.dumps({'detail': 'Internal error formatting LLM prompt.'})}\n\n"
-                return
-
-            logger.info("Prepared final prompt for streaming LLM.")
-
-            # === LLM Streaming ===
-            llm_start_time = time.perf_counter()
-            logger.info("Starting LLM stream...")
-
-            # Use the .stream() method. Based on the error, it returns a synchronous generator.
-            stream_iterator = llm.stream(prompt_str)
-
-            chunk_count = 0
-            # --- FIX: Use a standard 'for' loop for the synchronous generator ---
-            for chunk in stream_iterator:
-                chunk_content = None
-                # Handle different possible chunk types (string, AIMessageChunk, etc.)
-                if isinstance(chunk, str):
-                    chunk_content = chunk
-                elif hasattr(chunk, 'content') and isinstance(chunk.content, str): # LangChain AIMessageChunk common pattern
-                    chunk_content = chunk.content
-                elif isinstance(chunk, dict) and 'text' in chunk: # Handle potential dict chunks
-                    chunk_content = chunk['text']
-
-                # Check if we successfully extracted non-empty content
-                if chunk_content:
-                    chunk_count += 1
-                    # Format the string chunk as Server-Sent Event (SSE)
-                    sse_data = json.dumps({"text": chunk_content, "type": "chunk"})
-                    yield f"event: message\ndata: {sse_data}\n\n"
-                    # Still use await sleep inside the loop to yield control
-                    # This prevents the synchronous loop from blocking the async function entirely.
-                    await asyncio.sleep(0.001) # Tiny sleep
-            # --- END FIX ---
-
-            llm_stream_time = time.perf_counter() - llm_start_time
-            logger.info(f"LLM stream finished after {llm_stream_time:.2f}s, received {chunk_count} valid content chunks.")
-
-            # --- Signal End of Stream ---
-            total_processing_time = time.perf_counter() - start_time
-            logger.info(f"Total streaming request processed in {total_processing_time:.2f}s")
-            final_data = json.dumps({"processing_time": total_processing_time})
-            yield f"event: end\ndata: {final_data}\n\n"
-
-        except HTTPException as e:
-            # Log HTTPExceptions that might occur before streaming starts
-            logger.error(f"HTTPException during stream setup: {e.detail}")
-            # Attempt to yield error if possible, otherwise it might fail if headers sent
-            try:
-                yield f"event: error\ndata: {json.dumps({'detail': e.detail, 'status_code': e.status_code})}\n\n"
-            except Exception as yield_e:
-                logger.error(f"Failed to yield HTTPException details to stream: {yield_e}")
-        except Exception as e:
-            # Catch any other unexpected errors during the whole process
-            logger.error(f"Unexpected error during streaming query '{user_query}': {e}", exc_info=True)
-            # Send a generic error event to the client if possible
-            try:
-                yield f"event: error\ndata: {json.dumps({'detail': 'An unexpected internal error occurred during streaming.'})}\n\n"
-            except Exception as yield_e:
-                logger.error(f"Failed to yield generic error details to stream: {yield_e}")
-        finally:
-            # Optional: Log when generator finishes regardless of success/failure
-            logger.info("Stream generator finished.")
-
-    # Return the StreamingResponse, passing the async generator function
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
 
-# Keep other endpoints (/switch_llm, /model_info)
 
+# --- Other Endpoints ---
 @router.post("/switch_llm")
-async def switch_llm_endpoint(request: SwitchLLMRequest): # Request object no longer contains api_key
-    if request.backend not in ["ollama", "gemini"]: # Add other valid backends if needed
-         raise HTTPException(status_code=400, detail="Invalid backend. Must be 'ollama' or 'gemini'.") # Update message
+async def switch_llm_endpoint(request: SwitchLLMRequest):
+    """Switches the backend LLM used by the RAG service."""
+    if request.backend not in ["ollama", "gemini"]: # Add other valid backends as needed
+        raise HTTPException(status_code=400, detail="Invalid backend specified. Valid options: ollama, gemini.")
     try:
-        # Pass only the backend type, DO NOT pass request.api_key
-        result = switch_llm_backend(request.backend) # <-- MODIFY THIS CALL
+        # Assuming switch_llm_backend handles the logic and returns the new backend name
+        result = switch_llm_backend(request.backend)
         logger.info(f"Switched LLM backend to: {result}")
-        return {"message": f"Successfully switched to {result} LLM", "backend": result}
-    except ValueError as e:
-         logger.warning(f"Failed to switch LLM backend: {e}")
-         raise HTTPException(status_code=400, detail=str(e))
+        return {"message": f"Successfully switched LLM backend to {result}", "backend": result}
     except Exception as e:
-         logger.error(f"Error switching LLM: {e}", exc_info=True)
-         raise HTTPException(status_code=500, detail=f"Error switching LLM: {str(e)}")
+        logger.error(f"Failed to switch LLM backend to {request.backend}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to switch LLM backend: {e}")
+
 
 @router.get("/model_info")
 async def model_info_endpoint():
-     """Return information about the currently selected model."""
-     # --- Keep this endpoint as is ---
-     try:
-         info = get_model_info()
-         return info
-     except Exception as e:
-         logger.error(f"Error getting model info: {e}", exc_info=True)
-         raise HTTPException(status_code=500, detail=f"Error getting model info: {str(e)}")
+    """Returns information about the currently active LLM model."""
+    try:
+        # Assuming get_model_info retrieves details about the current LLM
+        info = get_model_info()
+        return info
+    except Exception as e:
+        logger.error(f"Failed to get model info: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve model info: {e}")
 
 
-# --- Prompt Templates ---
-# --- MODIFICATION: Removed local prompt functions ---
-# The functions get_default_prompt, get_credit_prompt, get_course_prompt
-# have been removed from here and should reside in prompts.py.
-# The code now imports get_prompts_dict from .prompts instead.
-# --- END MODIFICATION ---
+@router.get("/user_context_info", response_model=Dict[str, Any])
+async def user_context_endpoint(current_user: User = Depends(get_current_user)):
+    """
+    Returns the extracted user context structured like the /auth/me response.
+    Useful for debugging what data is being prepared for the RAG response context.
+    """
+    try:
+        # Call extract_user_context and return only the first part (the /auth/me structure)
+        auth_me_like_context, _ = extract_user_context(current_user)
+        return auth_me_like_context
+    except Exception as e:
+        logger.error(f"Error extracting user context for info endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error extracting user context")
+
+# --- End of Router Definition ---

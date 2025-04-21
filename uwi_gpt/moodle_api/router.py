@@ -1,6 +1,6 @@
 # moodle_api/router.py
 import logging
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
 from user_db.schemas import (
     CourseCreate,
@@ -11,6 +11,8 @@ from user_db.schemas import (
     TermOut,
     UserCreate,
     UserOut,
+    CourseGradeCreate,
+    CourseGradeOut,
 )
 from user_db.services import (
     create_course,
@@ -21,13 +23,20 @@ from user_db.services import (
     get_terms_by_user,
     get_user_by_id,
     list_courses,
+    get_course_by_id,
+    get_term_by_user_and_code,
+    create_or_update_course_grade,
+    get_course_grades_by_user,
+    get_course_grades_by_term,
 )
 from .models import MoodleCredentials, SASCredentials
 from .service import fetch_moodle_details, fetch_uwi_sas_details
-
+from sqlalchemy.orm import selectinload  
 from user_db.database import AsyncSessionLocal, get_db
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from sqlalchemy.future import select
+from user_db.models import User, Course, Term, EnrolledCourse, CourseGrade
+import asyncio
 from sqlalchemy import text
 
 
@@ -40,63 +49,319 @@ router = APIRouter(
 )
 
 
-@router.post("/data", summary="Fetch Moodle Courses and Calendar Events")
-async def get_moodle_data_endpoint(credentials: MoodleCredentials):
-    """
-    Logs into the UWI Mona VLE using provided credentials and retrieves:
-    - User's name and email
-    - Enrolled courses
-    - Calendar events within the specified time range (defaults provided)
-    """
+# Helper function to get or create a course
+async def get_or_create_course(db: AsyncSession, course_data: CourseCreate) -> Course:
+    """Check if a course exists by ID, if not create it"""
+    # First check if the course exists
+    existing_course = await get_course_by_id(db, course_data.id)
+    if existing_course:
+        return existing_course
+    
+    # If not, create it
     try:
-        # Because fetch_moodle_details is synchronous but involves I/O,
-        # FastAPI runs it in a threadpool when called from an async route.
-        # No need to explicitly use run_in_threadpool here.
-        data = fetch_moodle_details(credentials)
-        logger.info(
-            f"Successfully retrieved Moodle data for user {credentials.username[:3]}***"
-        )
-        return data
-    except HTTPException as e:
-        logger.warning(
-            f"HTTPException fetching Moodle data for {credentials.username[:3]}***: {e.detail} (Status: {e.status_code})"
-        )
-        raise e  # Re-raise exceptions from the service layer
+        return await create_course(db, course_data)
     except Exception as e:
-        logger.exception(
-            f"Unexpected error in /moodle/data endpoint for {credentials.username[:3]}***"
-        )  # Log stack trace
-        raise HTTPException(
-            status_code=500, detail="Internal server error retrieving Moodle data."
-        )
+        # If there's an error (likely a duplicate key), try to get it again
+        # This handles race conditions where course was created between our check and insert
+        existing_course = await get_course_by_id(db, course_data.id)
+        if existing_course:
+            return existing_course
+        raise e  # Re-raise if it's another issue
 
 
-@router.post("/data-sas")
-async def get_sas_data_endpoint(credentials: SASCredentials):
-    """
-    Logs into the UWI Mona SAS using provided credentials and retrieves:
-    - Enrolled courses and their respective letter grades
-    - GPA details - Semester GPA, Cumulative GPA To Date, Degree GPA To Date
-    - Credits Earned To Date
-    """
+# Helper function to update or create a term
+async def update_or_create_term(db: AsyncSession, term_data: TermCreate) -> Term:
+    """Update existing term or create a new one"""
     try:
-        data = fetch_uwi_sas_details(credentials)
-        logger.info(
-            f"Successfully retrieved Moodle data from SAS for user {credentials.username}***"
+        existing_term = await get_term_by_user_and_code(
+            db, term_data.user_id, term_data.term_code
         )
-        return data
-    except HTTPException as e:
-        logger.warning(
-            f"HTTPException fetching Moodle data from SAS for {credentials.username}***: {e.detail} (Status: {e.status_code})"
-        )
-        raise e  # Re-raise exceptions from the service layer
+        
+        if existing_term:
+            # Update fields if provided
+            if term_data.semester_gpa is not None:
+                existing_term.semester_gpa = term_data.semester_gpa
+            if term_data.cumulative_gpa is not None:
+                existing_term.cumulative_gpa = term_data.cumulative_gpa
+            if term_data.degree_gpa is not None:
+                existing_term.degree_gpa = term_data.degree_gpa
+            if term_data.credits_earned_to_date is not None:
+                existing_term.credits_earned_to_date = term_data.credits_earned_to_date
+            
+            await db.commit()
+            await db.refresh(existing_term)
+            return existing_term
+        else:
+            # Create new term
+            term = Term(**term_data.dict())
+            db.add(term)
+            await db.commit()
+            await db.refresh(term)
+            return term
     except Exception as e:
-        logger.exception(
-            f"Unexpected error in /moodle/data-sas endpoint for {credentials.username}***"
-        )  # Log stack trace
-        raise HTTPException(
-            status_code=500, detail="Internal server error retrieving Moodle data."
+        logger.error(f"Error updating/creating term: {e}")
+        # Rollback in case of error
+        await db.rollback()
+        raise e
+
+
+# Helper function to check if enrollment exists
+async def get_enrollment(db: AsyncSession, user_id: int, course_id: int, term_id: int) -> Optional[EnrolledCourse]:
+    """Check if enrollment exists"""
+    result = await db.execute(
+        select(EnrolledCourse).where(
+            EnrolledCourse.user_id == user_id,
+            EnrolledCourse.course_id == course_id,
+            EnrolledCourse.term_id == term_id
         )
+    )
+    return result.scalar_one_or_none()
+
+
+@router.post("/login", summary="Fetch Moodle Courses and optionally SAS Grades")
+async def get_moodle_data_endpoint(
+    credentials: MoodleCredentials,
+    fetch_grades: bool = True,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    If the user exists, return their stored courses & grades.
+    Otherwise, scrape Moodle (+ SAS) in parallel, upsert to the DB, and return everything.
+    """
+
+    # 1) Short‑circuit: try to load user + all relations in one go
+    q = (
+        select(User)
+        .where(User.student_id == credentials.username)
+        .options(
+            selectinload(User.enrollments).selectinload(EnrolledCourse.course),
+            selectinload(User.grades).selectinload(CourseGrade.course),
+            selectinload(User.terms),
+        )
+    )
+    result = await db.execute(q)
+    existing_user = result.scalar_one_or_none()
+
+    if existing_user:
+        # build moodle_data from enrollments
+        courses = [
+            {
+                "id": e.course.id,
+                "fullname": e.course.fullname,
+                "shortname": e.course.shortname,
+                "idnumber": e.course.idnumber,
+                "summary": e.course.summary,
+                "summaryformat": e.course.summaryformat,
+                "startdate": e.course.startdate,
+                "enddate": e.course.enddate,
+                "visible": e.course.visible,
+                "showactivitydates": e.course.showactivitydates,
+                "showcompletionconditions": e.course.showcompletionconditions,
+                "fullnamedisplay": e.course.fullnamedisplay,
+                "viewurl": e.course.viewurl,
+                "coursecategory": e.course.coursecategory,
+            }
+            for e in existing_user.enrollments
+        ]
+        moodle_data = {
+            "user_info": {
+                "name": f"{existing_user.firstname} {existing_user.lastname}",
+                "email": existing_user.email,
+                "student_id": existing_user.student_id,
+            },
+            "courses": {"courses": courses, "nextoffset": None},
+            "calendar_events": {"events": [], "firstid": None, "lastid": None},
+            "auth_tokens": {},
+        }
+
+        # build grades_data from historical grades
+        terms_payload = []
+        all_grades = existing_user.grades
+        for t in existing_user.terms:
+            term_courses = [
+                {
+                    "course_code": g.course_code,
+                    "course_title": g.course_title,
+                    "credit_hours": g.credit_hours,
+                    "grade_earned": g.grade_earned,
+                    "whatif_grade": g.whatif_grade,
+                }
+                for g in all_grades
+                if g.term_id == t.id
+            ]
+            terms_payload.append({
+                "term_code": t.term_code,
+                "courses": term_courses,
+                "semester_gpa": t.semester_gpa,
+                "cumulative_gpa": t.cumulative_gpa,
+                "degree_gpa": t.degree_gpa,
+                "credits_earned_to_date": t.credits_earned_to_date,
+            })
+
+        overall = {}
+        if terms_payload:
+            recent = terms_payload[0]
+            overall = {
+                "cumulative_gpa": recent["cumulative_gpa"],
+                "degree_gpa":   recent["degree_gpa"],
+                "total_credits_earned": recent["credits_earned_to_date"],
+            }
+
+        grades_data = {
+            "success": True,
+            "data": {
+                "student_name": moodle_data["user_info"]["name"],
+                "student_id":   moodle_data["user_info"]["student_id"],
+                "terms":        terms_payload,
+                "overall":      overall,
+            },
+        }
+        grades_status = {"fetched": False, "success": True, "error": None}
+
+        return {
+            "moodle_data":  moodle_data,
+            "grades_status": grades_status,
+            "grades_data":   grades_data,
+        }
+
+    # 2) First‑time user: scrape Moodle & SAS in parallel
+    try:
+        moodle_task = asyncio.to_thread(fetch_moodle_details, credentials)
+        sas_task = None
+        if fetch_grades:
+            sas_creds = SASCredentials(
+                username=credentials.username,
+                password=credentials.password
+            )
+            sas_task = asyncio.to_thread(fetch_uwi_sas_details, sas_creds)
+
+        if sas_task:
+            moodle_payload, sas_payload = await asyncio.gather(moodle_task, sas_task)
+        else:
+            moodle_payload = await moodle_task
+            sas_payload = None
+
+        # a) create user
+        u = moodle_payload["user_info"]
+        new_user = await create_user(db, UserCreate(
+            firstname=u["name"].split(" ",1)[0],
+            lastname=(u["name"].split(" ",1)[1] if " " in u["name"] else ""),
+            email=u["email"],
+            student_id=u["student_id"],
+            password=credentials.password
+        ))
+        user_id = new_user.id
+
+        # b) placeholder “CURRENT” term
+        current_term = await update_or_create_term(db, TermCreate(
+            term_code="CURRENT",
+            user_id=user_id,
+            semester_gpa=None,
+            cumulative_gpa=None,
+            degree_gpa=None,
+            credits_earned_to_date=None
+        ))
+
+        # c) upsert courses & enrollments
+        for c in moodle_payload["courses"]["courses"]:
+            course = await get_or_create_course(db, CourseCreate(
+                id=c["id"],
+                fullname=c["fullname"],
+                shortname=c.get("shortname", ""),
+                idnumber=c.get("idnumber", ""),
+                summary=c.get("summary", ""),
+                summaryformat=c.get("summaryformat", 1),
+                startdate=c.get("startdate", 0),
+                enddate=c.get("enddate", 0),
+                visible=bool(c.get("visible", False)),
+                showactivitydates=bool(c.get("showactivitydates", False)),
+                showcompletionconditions=bool(c.get("showcompletionconditions", False)),
+                fullnamedisplay=c.get("fullnamedisplay", c["fullname"]),
+                viewurl=c.get("viewurl", ""),
+                coursecategory=c.get("coursecategory", "")
+            ))
+            if not await enroll_user_in_course(db, EnrollmentCreate(
+                user_id=user_id,
+                course_id=course.id,
+                term_id=current_term.id,
+                course_code=c.get("shortname", ""),
+                course_title=c["fullname"],
+                credit_hours=3.0
+            )):
+                # create if not exists
+                pass
+
+        # d) upsert SAS grades
+        grades_payload = None
+        if sas_payload and sas_payload.get("success"):
+            grades_payload = sas_payload
+            for term in sas_payload["data"]["terms"]:
+                term_rec = await update_or_create_term(db, TermCreate(
+                    term_code=term["term_code"],
+                    user_id=user_id,
+                    semester_gpa=term.get("semester_gpa"),
+                    cumulative_gpa=term.get("cumulative_gpa"),
+                    degree_gpa=term.get("degree_gpa"),
+                    credits_earned_to_date=term.get("credits_earned_to_date")
+                ))
+                for g in term["courses"]:
+                    cid = -abs(hash(g["course_code"]) % 1_000_000)
+                    course = await get_or_create_course(db, CourseCreate(
+                        id=cid,
+                        fullname=g.get("course_title",""),
+                        shortname=g.get("course_code",""),
+                        idnumber=g.get("course_code",""),
+                        summary="Imported from SAS",
+                        summaryformat=1,
+                        startdate=0,
+                        enddate=0,
+                        visible=True,
+                        showactivitydates=False,
+                        showcompletionconditions=False,
+                        fullnamedisplay=g.get("course_title",""),
+                        viewurl="",
+                        coursecategory=""
+                    ))
+                    await create_or_update_course_grade(db, CourseGradeCreate(
+                        user_id=user_id,
+                        course_id=course.id,
+                        term_id=term_rec.id,
+                        course_code=g.get("course_code",""),
+                        course_title=g.get("course_title",""),
+                        credit_hours=g.get("credit_hours",0.0),
+                        grade_earned=g.get("grade_earned"),
+                        whatif_grade=g.get("whatif_grade"),
+                        is_historical=True,
+                        earned_date=None
+                    ))
+
+        # e) return CombinedLoginResponse shape
+        return {
+            "moodle_data":  moodle_payload,
+            "grades_status": {
+                "fetched": fetch_grades,
+                "success": bool(grades_payload),
+                "error": None if grades_payload else "No grades fetched"
+            },
+            "grades_data":   grades_payload
+        }
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error in first‑time /moodle/login flow")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.get("/db/grades/user/{user_id}", response_model=List[CourseGradeOut])
+async def get_user_grades(user_id: int, db: AsyncSession = Depends(get_db)):
+    """Get all historical course grades for a user"""
+    return await get_course_grades_by_user(db, user_id)
+
+
+@router.get("/db/grades/user/{user_id}/term/{term_id}", response_model=List[CourseGradeOut])
+async def get_user_term_grades(user_id: int, term_id: int, db: AsyncSession = Depends(get_db)):
+    """Get all historical course grades for a user for a specific term"""
+    return await get_course_grades_by_term(db, user_id, term_id)
 
 
 @router.get("/test-db")

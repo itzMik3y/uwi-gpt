@@ -1,13 +1,19 @@
 // src/lib/api/moodleClient.ts
 import axios, { AxiosError, AxiosInstance, AxiosRequestConfig } from 'axios';
-import { 
-  MoodleData, 
-  MoodleCourse, 
-  MoodleCalendarEvent, 
+import {
+  MoodleData,
+  MoodleCourse,
+  MoodleCalendarEvent,
   MoodleLoginRequest,
-  MoodleLoginResponse,
-  MoodleErrorResponse
+  CombinedLoginResponse,
+  MoodleErrorResponse,
+  AuthResponse
 } from '@/types/moodle';
+
+// Token storage keys
+export const TOKEN_STORAGE_KEY = 'uwi_access_token';
+export const REFRESH_TOKEN_STORAGE_KEY = 'uwi_refresh_token';
+export const TOKEN_EXPIRY_KEY = 'uwi_token_expiry';
 
 // API error type definition
 export interface ApiError {
@@ -20,7 +26,9 @@ export interface ApiError {
 export class MoodleApiClient {
   private client: AxiosInstance;
   private baseUrl: string;
-  private token: string | null = null;
+  private accessToken: string | null = null;
+  private refreshToken: string | null = null;
+  private tokenExpiry: number | null = null;
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
@@ -33,98 +41,225 @@ export class MoodleApiClient {
       },
     });
 
+    // Initialize from localStorage if available (client-side only)
+    if (typeof window !== 'undefined') {
+      this.loadTokensFromStorage();
+    }
+
+    // Add request interceptor to handle token expiry
+    this.client.interceptors.request.use(
+      async (config) => {
+        // If token is about to expire, try to refresh it
+        if (this.shouldRefreshToken()) {
+          await this.refreshAccessToken();
+        }
+        
+        // Add the token to the request if available
+        if (this.accessToken) {
+          config.headers['Authorization'] = `Bearer ${this.accessToken}`;
+        }
+        
+        return config;
+      },
+      (error) => Promise.reject(error)
+    );
+
     // Add response interceptor for error handling
     this.client.interceptors.response.use(
       (response) => response,
-      (error) => Promise.reject(this.normalizeError(error))
+      async (error) => {
+        const originalRequest = error.config;
+        
+        // Handle 401 errors by refreshing token and retrying (if not already retried)
+        if (error.response?.status === 401 && !originalRequest._retry && this.refreshToken) {
+          originalRequest._retry = true;
+          
+          try {
+            await this.refreshAccessToken();
+            
+            // Update the Authorization header and retry
+            originalRequest.headers['Authorization'] = `Bearer ${this.accessToken}`;
+            return this.client(originalRequest);
+          } catch (refreshError) {
+            // If refresh fails, clear tokens and reject
+            this.clearTokens();
+            return Promise.reject(this.normalizeError(refreshError));
+          }
+        }
+        
+        return Promise.reject(this.normalizeError(error));
+      }
     );
+  }
+
+  /**
+   * Load tokens from localStorage (client-side only)
+   */
+  private loadTokensFromStorage(): void {
+    this.accessToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+    this.refreshToken = localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY);
+    const expiryStr = localStorage.getItem(TOKEN_EXPIRY_KEY);
+    this.tokenExpiry = expiryStr ? parseInt(expiryStr, 10) : null;
+  }
+
+  /**
+   * Save tokens to localStorage (client-side only)
+   */
+  private saveTokensToStorage(): void {
+    if (typeof window === 'undefined') return;
+    
+    if (this.accessToken) {
+      localStorage.setItem(TOKEN_STORAGE_KEY, this.accessToken);
+    } else {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+    }
+    
+    if (this.refreshToken) {
+      localStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, this.refreshToken);
+    } else {
+      localStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
+    }
+    
+    if (this.tokenExpiry) {
+      localStorage.setItem(TOKEN_EXPIRY_KEY, this.tokenExpiry.toString());
+    } else {
+      localStorage.removeItem(TOKEN_EXPIRY_KEY);
+    }
+  }
+
+  /**
+   * Check if token should be refreshed (less than 5 minutes remaining)
+   */
+  private shouldRefreshToken(): boolean {
+    if (!this.accessToken || !this.tokenExpiry) return false;
+    
+    // Refresh if less than 5 minutes remaining
+    const fiveMinutesInMs = 5 * 60 * 1000;
+    return Date.now() + fiveMinutesInMs > this.tokenExpiry;
+  }
+
+  /**
+   * Refresh the access token using the refresh token
+   */
+  private async refreshAccessToken(): Promise<void> {
+    if (!this.refreshToken) {
+      throw new Error('No refresh token available');
+    }
+    
+    try {
+      // Call the refresh token endpoint
+      const response = await axios.post<AuthResponse>(
+        `${this.baseUrl}/auth/refresh`,
+        { refresh_token: this.refreshToken }
+      );
+      
+      // Update tokens with new values
+      this.setTokensFromResponse(response.data);
+    } catch (error) {
+      // If refresh fails, clear tokens
+      this.clearTokens();
+      throw error;
+    }
+  }
+
+  /**
+   * Set tokens from auth response
+   */
+  private setTokensFromResponse(authResponse: AuthResponse): void {
+    this.accessToken = authResponse.access_token;
+    this.refreshToken = authResponse.refresh_token;
+    this.tokenExpiry = authResponse.expires_at * 1000; // Convert to milliseconds
+    
+    this.saveTokensToStorage();
   }
 
   /**
    * Set the auth token for future requests
    */
-  public setToken(token: string): void {
-    this.token = token;
-    this.client.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+  public setTokens(accessToken: string, refreshToken: string, expiresAt: number): void {
+    this.accessToken = accessToken;
+    this.refreshToken = refreshToken;
+    this.tokenExpiry = expiresAt * 1000; // Convert to milliseconds
+    
+    this.saveTokensToStorage();
   }
 
   /**
-   * Clear the auth token
+   * Clear all tokens
    */
-  public clearToken(): void {
-    this.token = null;
-    delete this.client.defaults.headers.common['Authorization'];
+  public clearTokens(): void {
+    this.accessToken = null;
+    this.refreshToken = null;
+    this.tokenExpiry = null;
+    
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      localStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
+      localStorage.removeItem(TOKEN_EXPIRY_KEY);
+    }
   }
 
   /**
    * Get the current auth token
    */
-  public getToken(): string | null {
-    return this.token;
+  public getAccessToken(): string | null {
+    return this.accessToken;
+  }
+
+  /**
+   * Check if user is authenticated
+   */
+  public isAuthenticated(): boolean {
+    return !!this.accessToken && !!this.tokenExpiry && Date.now() < this.tokenExpiry;
   }
 
   /**
    * Log in to Moodle and get an auth token
    */
-  public async login(credentials: MoodleLoginRequest): Promise<MoodleData> {
-    try {
-      // This endpoint both authenticates and returns data in one step
-      const response = await this.client.post<MoodleData>(
-        '/moodle/data', 
-        {
-          username: credentials.username,
-          password: credentials.password
-        }
-      );
-      
-      // The response directly contains the user data, courses, and calendar events
-      // Let's store the user email for authentication state
-      if (response.data && response.data.user_info && response.data.user_info.email) {
-        // We don't have a token in the response, but we can use the credentials
-        // to indicate successful authentication
-        this.token = 'authenticated'; // Pseudo-token
-        console.log(response.data)
-        localStorage.setItem('moodle_username', response.data.user_info.email);
-        localStorage.setItem('moodle_password', credentials.password);
-        localStorage.setItem('moodle_auth_state', 'authenticated');
+  public async login(
+    credentials: MoodleLoginRequest
+  ): Promise<AuthResponse> {
+    const response = await this.client.post<AuthResponse>(
+      '/auth/token',
+      {
+        username: credentials.username,
+        password: credentials.password,
       }
-      
+    );
+
+    // Store tokens
+    this.setTokensFromResponse(response.data);
+    
+    return response.data;
+  }
+
+  /**
+   * Get user data from /auth/me endpoint
+   */
+  public async getUserData(): Promise<CombinedLoginResponse> {
+    if (!this.isAuthenticated()) {
+      throw new Error('Authentication required. Please log in first.');
+    }
+
+    try {
+      const response = await this.client.get<CombinedLoginResponse>('/auth/me');
       return response.data;
     } catch (error) {
       throw this.normalizeError(error);
     }
   }
-  
-  public async getUserData(): Promise<MoodleData> {
-    // Since our API returns all data at login, we would need to re-authenticate
-    // to get fresh data. This is a design consideration - you might want to 
-    // modify this based on your needs.
-    if (!this.token) {
-      throw new Error('Authentication required. Please log in first.');
-    }
-  
-    // This implementation assumes your credentials are stored securely
-    // and would re-fetch the data using the stored credentials
-    const username = localStorage.getItem('moodle_username');
-    const password = localStorage.getItem('moodle_password');
-    
-    if (!username || !password) {
-      throw new Error('Credentials not found. Please log in again.');
-    }
-    
-    return this.login({ username, password });
-  }
+
   /**
    * Get list of user courses
    */
   public async getCourses(): Promise<MoodleCourse[]> {
-    if (!this.token) {
+    if (!this.isAuthenticated()) {
       throw new Error('Authentication required. Please log in first.');
     }
 
     try {
-      const response = await this.client.get<MoodleData>('/moodle/data');
-      return response.data.courses.courses;
+      const response = await this.getUserData();
+      return response.moodle_data.courses.courses;
     } catch (error) {
       throw this.normalizeError(error);
     }
@@ -134,25 +269,13 @@ export class MoodleApiClient {
    * Get calendar events for the user
    */
   public async getCalendarEvents(): Promise<MoodleCalendarEvent[]> {
-    if (!this.token) {
+    if (!this.isAuthenticated()) {
       throw new Error('Authentication required. Please log in first.');
     }
 
     try {
-      const response = await this.client.get<MoodleData>('/moodle/data');
-      return response.data.calendar_events.events;
-    } catch (error) {
-      throw this.normalizeError(error);
-    }
-  }
-
-  /**
-   * Get course by ID
-   */
-  public async getCourseById(courseId: number): Promise<MoodleCourse | null> {
-    try {
-      const courses = await this.getCourses();
-      return courses.find(course => course.id === courseId) || null;
+      const response = await this.getUserData();
+      return response.moodle_data.calendar_events.events;
     } catch (error) {
       throw this.normalizeError(error);
     }
@@ -193,38 +316,6 @@ export class MoodleApiClient {
       message: 'An unknown error occurred',
       data: error,
     };
-  }
-
-  /**
-   * Custom API call to the Moodle Web Service
-   */
-  public async callMoodleFunction<T = any>(
-    wsfunction: string, 
-    params: Record<string, any> = {},
-    config?: AxiosRequestConfig
-  ): Promise<T> {
-    if (!this.token) {
-      throw new Error('Authentication required. Please log in first.');
-    }
-
-    try {
-      const response = await this.client.post<T>(
-        '/webservice/rest/server.php',
-        null,
-        {
-          params: {
-            wsfunction,
-            moodlewsrestformat: 'json',
-            wstoken: this.token,
-            ...params
-          },
-          ...config
-        }
-      );
-      return response.data;
-    } catch (error) {
-      throw this.normalizeError(error);
-    }
   }
 }
 

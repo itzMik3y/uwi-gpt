@@ -2,11 +2,34 @@
 import os
 import re
 import json
+import logging
+import asyncio
+from typing import Optional, List, Dict
+
 import requests
 from bs4 import BeautifulSoup, Tag
 from fastapi import HTTPException
-from .models import MoodleCredentials, SASCredentials  # Relative import
-import traceback  # Import traceback for detailed logging
+from sqlalchemy.ext.asyncio import AsyncSession
+# No need for sessionmaker here if called within request scope
+# from sqlalchemy.orm import sessionmaker
+import traceback
+
+# Relative import for credentials models
+from .models import MoodleCredentials, SASCredentials
+
+# Imports for the data saving function & helpers
+from user_db.services import (
+    get_course_by_id, create_course, get_term_by_user_and_code, create_term,
+    enroll_user_in_course, create_or_update_course_grade
+)
+from user_db.schemas import (
+    CourseCreate, TermCreate, EnrollmentCreate, CourseGradeCreate
+)
+from user_db.models import Course, Term, User # User might be needed for type hints if helpers use it
+
+
+# --- Logger ---
+logger = logging.getLogger(__name__)
 
 # Define URLs
 LOGIN_URL = "https://vle.mona.uwi.edu/login/index.php"
@@ -771,3 +794,151 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
             # "gpa_summary": gpa_summary_by_term
             "data": data,
         }
+
+async def get_or_create_course(db: AsyncSession, course_data: CourseCreate) -> Course:
+    """Check if a course exists by ID, if not create it. Relies on caller for commit."""
+    existing_course = await get_course_by_id(db, course_data.id)
+    if existing_course:
+        return existing_course
+    try:
+        # Assuming create_course adds and session commit happens later
+        return await create_course(db, course_data)
+    except Exception as e:
+        # Log race condition without rollback, try fetch again
+        logger.warning(f"Race condition/Error creating course {course_data.id}. Re-fetching.", exc_info=True)
+        await db.flush() # Flush to ensure any previous adds are processed before fetch
+        existing_course = await get_course_by_id(db, course_data.id)
+        if existing_course:
+            return existing_course
+        logger.error(f"Failed to get or create course {course_data.id} after re-fetch.", exc_info=True)
+        raise # Re-raise original error
+
+
+async def update_or_create_term(db: AsyncSession, term_data: TermCreate) -> Term:
+    """Update existing term or create a new one. Relies on caller for commit."""
+    existing_term = await get_term_by_user_and_code(db, term_data.user_id, term_data.term_code)
+    if existing_term:
+        updated = False
+        if term_data.semester_gpa is not None and existing_term.semester_gpa != term_data.semester_gpa:
+            existing_term.semester_gpa = term_data.semester_gpa; updated = True
+        if term_data.cumulative_gpa is not None and existing_term.cumulative_gpa != term_data.cumulative_gpa:
+             existing_term.cumulative_gpa = term_data.cumulative_gpa; updated = True
+        if term_data.degree_gpa is not None and existing_term.degree_gpa != term_data.degree_gpa:
+             existing_term.degree_gpa = term_data.degree_gpa; updated = True
+        if term_data.credits_earned_to_date is not None and existing_term.credits_earned_to_date != term_data.credits_earned_to_date:
+             existing_term.credits_earned_to_date = term_data.credits_earned_to_date; updated = True
+        if updated:
+            await db.flush() # Flush changes to session
+            await db.refresh(existing_term) # Refresh state if needed
+        return existing_term
+    else:
+        # Assuming create_term adds and session commit happens later
+        new_term = Term(**term_data.dict())
+        db.add(new_term)
+        await db.flush() # Flush to make sure it's added before potential use
+        await db.refresh(new_term)
+        return new_term
+        # return await create_term(db, term_data) # Use above if create_term commits
+
+
+async def save_initial_scraped_data(
+    db: AsyncSession, # Accept session directly when called by route
+    user_id: int,
+    moodle_payload: Optional[dict],
+    sas_payload: Optional[dict]
+):
+    """
+    Synchronously processes and saves scraped data within the provided DB session.
+    Raises ValueError on failure. Assumes caller handles commit/rollback.
+    """
+    logger.info(f"SYNC SAVE: Saving initial scraped data for user {user_id}")
+    # Wrap operations for Moodle and SAS separately to pinpoint errors
+    try:
+        # --- Process Moodle ---
+        if moodle_payload and isinstance(moodle_payload.get("courses"), dict):
+            current_term_data = TermCreate(term_code="CURRENT", user_id=user_id)
+            current_term = await update_or_create_term(db, current_term_data) # Pass session
+
+            moodle_courses = moodle_payload.get("courses", {}).get("courses", [])
+            logger.info(f"SYNC SAVE: Processing {len(moodle_courses)} Moodle courses for user {user_id}")
+            for c in moodle_courses:
+                 course_id = c.get("id")
+                 if course_id is None: logger.warning(f"Skipping Moodle course, missing ID: {c.get('fullname')}"); continue
+                 try: course_id = int(course_id)
+                 except (ValueError, TypeError): logger.warning(f"Skipping Moodle course, invalid ID type: {c.get('fullname')}"); continue
+
+                 course_create_data = CourseCreate(
+                     id=course_id,fullname=c.get("fullname","?"), shortname=c.get("shortname",""),
+                     idnumber=c.get("idnumber", ""), summary=c.get("summary", ""),
+                     summaryformat=int(c.get("summaryformat", 1)), startdate=int(c.get("startdate", 0)),
+                     enddate=int(c.get("enddate", 0)), visible=bool(c.get("visible", False)),
+                     showactivitydates=bool(c.get("showactivitydates", False)),
+                     showcompletionconditions=bool(c.get("showcompletionconditions", False)),
+                     fullnamedisplay=c.get("fullnamedisplay", c.get("fullname", "?")),
+                     viewurl=c.get("viewurl", ""), coursecategory=c.get("coursecategory", "")
+                 )
+                 course = await get_or_create_course(db, course_create_data) # Pass session
+
+                 enrollment_data = EnrollmentCreate(
+                     user_id=user_id, course_id=course.id, term_id=current_term.id,
+                     course_code=course.shortname, course_title=course.fullname,
+                     # TODO: Determine actual credit hours if possible, defaulting to 3.0
+                     credit_hours=float(c.get("credit_hours", 3.0)) # Example: Try getting from payload or default
+                 )
+                 await enroll_user_in_course(db, enrollment_data) # Pass session
+        else:
+            logger.warning(f"SYNC SAVE: No valid Moodle course data to process for user {user_id}")
+
+    except Exception as e:
+        logger.error(f"SYNC SAVE: Failed during Moodle data processing for user {user_id}: {e}", exc_info=True)
+        raise ValueError(f"Failed to save Moodle data") from e # Raise specific error to trigger rollback in router
+
+    try:
+        # --- Process SAS ---
+        if sas_payload and sas_payload.get("success") and isinstance(sas_payload.get("data"), dict):
+             sas_data = sas_payload["data"]
+             terms_data = sas_data.get("terms", [])
+             logger.info(f"SYNC SAVE: Processing {len(terms_data)} SAS terms/grades for user {user_id}")
+
+             for term in terms_data:
+                  term_code = term.get("term_code")
+                  if not term_code: logger.warning("Skipping SAS term, missing term_code."); continue
+
+                  term_create_data = TermCreate(
+                       term_code=term_code, user_id=user_id, semester_gpa=term.get("semester_gpa"),
+                       cumulative_gpa=term.get("cumulative_gpa"), degree_gpa=term.get("degree_gpa"),
+                       credits_earned_to_date=term.get("credits_earned_to_date")
+                  )
+                  term_rec = await update_or_create_term(db, term_create_data) # Pass session
+
+                  sas_courses = term.get("courses", [])
+                  for g in sas_courses:
+                       course_code = g.get("course_code")
+                       if not course_code: logger.warning(f"Skipping SAS grade term {term_code}, missing course_code."); continue
+
+                       sas_course_id = -abs(hash(course_code)) % (2**31)
+                       course_create_data = CourseCreate(
+                           id=sas_course_id, fullname=g.get("course_title", course_code), shortname=course_code,
+                           idnumber=course_code, summary="Imported from SAS", summaryformat=1,
+                           startdate=0, enddate=0, visible=True, showactivitydates=False,
+                           showcompletionconditions=False, fullnamedisplay=g.get("course_title", course_code),
+                           viewurl="", coursecategory="SAS Imported"
+                       )
+                       course = await get_or_create_course(db, course_create_data) # Pass session
+
+                       grade_data = CourseGradeCreate(
+                           user_id=user_id, course_id=course.id, term_id=term_rec.id, course_code=course_code,
+                           course_title=g.get("course_title", course_code), credit_hours=float(g.get("credit_hours", 0.0)),
+                           grade_earned=g.get("grade_earned"), whatif_grade=g.get("whatif_grade"),
+                           is_historical=True, earned_date=None
+                       )
+                       await create_or_update_course_grade(db, grade_data) # Pass session
+        else:
+             logger.warning(f"SYNC SAVE: No successful SAS data found to process for user {user_id}")
+
+    except Exception as e:
+        logger.error(f"SYNC SAVE: Failed during SAS data processing for user {user_id}: {e}", exc_info=True)
+        raise ValueError(f"Failed to save SAS data") from e # Raise specific error to trigger rollback in router
+
+    logger.info(f"SYNC SAVE: Finished processing initial scraped data for user {user_id}")
+    # NO COMMIT/ROLLBACK HERE - handled by calling route
