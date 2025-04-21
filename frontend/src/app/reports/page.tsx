@@ -6,6 +6,7 @@ import type { RootState } from '@/store'
 import { store } from '@/store'
 import { Layout } from '@/app/components/layout/Layout'
 import { Button } from '@/components/ui/button'
+import * as XLSX from 'xlsx'
 import {
   ResponsiveContainer,
   LineChart,
@@ -22,16 +23,16 @@ import {
   ChevronDown,
   RefreshCw,
   TrendingUp,
-  Download,
-  Share2,
   Lightbulb,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Download,
+  Share2
 } from 'lucide-react'
 import { formatTermLabel } from '@/utils/termUtils'
 
 /** Chart with multiple views including all‑time distribution,
- * all per‑term charts left‑to‑right chronological.
+ *  all per‑term charts left‑to‑right chronological.
  */
 const GradeTrendsChart: React.FC = () => {
   const [view, setView] = useState<
@@ -71,8 +72,8 @@ const GradeTrendsChart: React.FC = () => {
     .sort((a, b) => b.count - a.count)
 
   const options = [
-    { key: 'semester', label: 'Semester GPA' },
-    { key: 'cumulative', label: 'Cumulative GPA' },
+    { key: 'semester', label: 'Semester GPA' },
+    { key: 'cumulative', label: 'Cumulative GPA' },
     { key: 'credits', label: 'Credits/Term' },
     { key: 'courses', label: 'Courses/Term' },
     { key: 'atRisk', label: 'At‑Risk Count' },
@@ -195,7 +196,7 @@ const SemesterSection: React.FC<SemesterSectionProps> = ({
             {term.courses.map((c, i) => (
               <tr key={i} className="border-t">
                 <td className="py-1">
-                  {c.course_code} – {c.course_title}
+                  {c.course_code} – {c.course_title}
                 </td>
                 <td className="text-center py-1">{c.grade_earned}</td>
                 <td className="text-center py-1">{c.credit_hours}</td>
@@ -204,8 +205,8 @@ const SemesterSection: React.FC<SemesterSectionProps> = ({
           </tbody>
         </table>
         <p className="mt-2 text-xs text-gray-500">
-          Semester GPA: {term.semester_gpa ?? 'N/A'} | 
-          Cumulative GPA: {term.cumulative_gpa ?? 'N/A'}
+          Semester GPA: {term.semester_gpa ?? 'N/A'} | Cumulative GPA:{' '}
+          {term.cumulative_gpa ?? 'N/A'}
         </p>
       </div>
     )}
@@ -230,7 +231,9 @@ const GradesDashboardContent: React.FC = () => {
   const cumDelta = cumulativeGPA - cumPrev
 
   const earnedCredits =
-    gradesData.overall?.total_credits_earned ?? latest?.credits_earned_to_date ?? 0
+    gradesData.overall?.total_credits_earned ??
+    latest?.credits_earned_to_date ??
+    0
 
   const atRisk =
     latest?.courses.filter((c) => /^F|EI/.test(c.grade_earned)) || []
@@ -249,6 +252,38 @@ const GradesDashboardContent: React.FC = () => {
       prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]
     )
 
+  // Excel export handler
+  const exportToExcel = () => {
+    const rows: Record<string, any>[] = []
+    gradesData.terms.forEach((t) => {
+      const termLabel = formatTermLabel(t.term_code)
+      t.courses.forEach((c) => {
+        rows.push({
+          Term: termLabel,
+          'Course Code': c.course_code,
+          'Course Title': c.course_title,
+          'Grade Earned': c.grade_earned,
+          'Credit Hours': c.credit_hours,
+          'Semester GPA': t.semester_gpa,
+          'Cumulative GPA': t.cumulative_gpa
+        })
+      })
+    })
+    const ws = XLSX.utils.json_to_sheet(rows)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Grades')
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+    const blob = new Blob([wbout], { type: 'application/octet-stream' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'Grades.xlsx'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold mb-6">My Grades & Insights</h1>
@@ -261,15 +296,22 @@ const GradesDashboardContent: React.FC = () => {
             <span>Current GPA</span>
             <TrendingUp className="text-blue-500" />
           </div>
-          <div className="text-2xl font-semibold">{currentGPA.toFixed(2)}</div>
+          <div className="text-2xl font-semibold">
+            {currentGPA.toFixed(2)}
+          </div>
           {prev && (
             <div
               className={`mt-1 flex items-center text-xs font-medium ${
                 delta >= 0 ? 'text-green-600' : 'text-red-600'
               }`}
             >
-              {delta >= 0 ? <ArrowUp className="h-4 w-4 mr-1" /> : <ArrowDown className="h-4 w-4 mr-1" />}
-              {delta >= 0 ? '+' : ''}{delta.toFixed(2)} from last term
+              {delta >= 0 ? (
+                <ArrowUp className="h-4 w-4 mr-1" />
+              ) : (
+                <ArrowDown className="h-4 w-4 mr-1" />
+              )}
+              {delta >= 0 ? '+' : ''}
+              {delta.toFixed(2)} from last term
             </div>
           )}
         </div>
@@ -280,15 +322,22 @@ const GradesDashboardContent: React.FC = () => {
             <span>Cumulative GPA</span>
             <TrendingUp className="text-blue-500" />
           </div>
-          <div className="text-2xl font-semibold">{cumulativeGPA.toFixed(2)}</div>
+          <div className="text-2xl font-semibold">
+            {cumulativeGPA.toFixed(2)}
+          </div>
           {prev && (
             <div
               className={`mt-1 flex items-center text-xs font-medium ${
                 cumDelta >= 0 ? 'text-green-600' : 'text-red-600'
               }`}
             >
-              {cumDelta >= 0 ? <ArrowUp className="h-4 w-4 mr-1" /> : <ArrowDown className="h-4 w-4 mr-1" />}
-              {cumDelta >= 0 ? '+' : ''}{cumDelta.toFixed(2)} from last term
+              {cumDelta >= 0 ? (
+                <ArrowUp className="h-4 w-4 mr-1" />
+              ) : (
+                <ArrowDown className="h-4 w-4 mr-1" />
+              )}
+              {cumDelta >= 0 ? '+' : ''}
+              {cumDelta.toFixed(2)} from last term
             </div>
           )}
         </div>
@@ -297,7 +346,13 @@ const GradesDashboardContent: React.FC = () => {
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
             <span>Credits Earned</span>
-            <svg className="h-4 w-4 text-purple-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <svg
+              className="h-4 w-4 text-purple-500"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+            >
               <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
               <path d="M6 12v5c0 2 2 3 6 3s6-1 6-3v-5" />
             </svg>
@@ -305,25 +360,39 @@ const GradesDashboardContent: React.FC = () => {
           <div className="text-2xl font-semibold">{earnedCredits}</div>
         </div>
 
-        {/* At‑Risk Courses */}
+        {/* At-Risk Courses */}
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
             <span>At‑Risk Courses</span>
-            <svg className="h-4 w-4 text-red-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <svg
+              className="h-4 w-4 text-red-500"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+            >
               <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86" />
               <line x1="12" y1="9" x2="12" y2="13" />
               <line x1="12" y1="17" x2="12.01" y2="17" />
             </svg>
           </div>
           <div className="text-2xl font-semibold">{atRisk.length}</div>
-          {atRisk.length > 0 && <div className="mt-1 text-xs text-red-600">Action needed</div>}
+          {atRisk.length > 0 && (
+            <div className="mt-1 text-xs text-red-600">Action needed</div>
+          )}
         </div>
 
         {/* Class Standing */}
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
             <span>Class Standing</span>
-            <svg className="h-4 w-4 text-yellow-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <svg
+              className="h-4 w-4 text-yellow-500"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+            >
               <path d="M12 2v20" />
               <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
             </svg>
@@ -341,7 +410,9 @@ const GradesDashboardContent: React.FC = () => {
             <GradeTrendsChart />
           </div>
           <div className="bg-white border rounded-lg p-4">
-            <h2 className="text-lg font-medium mb-4">Current Courses & Predictions</h2>
+            <h2 className="text-lg font-medium mb-4">
+              Current Courses & Predictions
+            </h2>
             {latest?.courses.map((c, i) => {
               const risk = /^F|EI/.test(c.grade_earned)
               return (
@@ -353,14 +424,20 @@ const GradesDashboardContent: React.FC = () => {
                 >
                   <div>
                     <h3 className="font-medium">{c.course_title}</h3>
-                    <span className="text-sm text-gray-500">{c.course_code}</span>
+                    <span className="text-sm text-gray-500">
+                      {c.course_code}
+                    </span>
                   </div>
                   <span
                     className={`px-2 py-1 rounded-full text-sm ${
-                      risk ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'
+                      risk
+                        ? 'bg-red-100 text-red-800'
+                        : 'bg-green-100 text-green-800'
                     }`}
                   >
-                    {risk ? `At Risk: ${c.grade_earned}` : `Predicted: ${c.grade_earned}`}
+                    {risk
+                      ? `At Risk: ${c.grade_earned}`
+                      : `Predicted: ${c.grade_earned}`}
                   </span>
                 </div>
               )
@@ -398,11 +475,16 @@ const GradesDashboardContent: React.FC = () => {
               ))}
             </div>
             <div className="flex space-x-2 mt-4">
-              <Button className="flex items-center bg-blue-600 hover:bg-blue-700">
-                <Download className="mr-2" />Export PDF
+              <Button
+                onClick={exportToExcel}
+                className="flex items-center bg-green-600 hover:bg-green-700"
+              >
+                <Download className="mr-2" />
+                Export Excel
               </Button>
               <Button variant="outline" className="flex items-center">
-                <Share2 className="mr-2" />Share
+                <Share2 className="mr-2" />
+                Share
               </Button>
             </div>
           </div>

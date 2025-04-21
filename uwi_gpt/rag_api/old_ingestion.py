@@ -23,7 +23,7 @@ import platform
 import joblib
 import nltk
 import pdfplumber
-from typing import List, Tuple
+
 from transformers import AutoTokenizer
 from langchain_community.document_loaders import TextLoader
 # from langchain_community.embeddings import SentenceTransformerEmbeddings
@@ -506,125 +506,163 @@ def load_markdown_from_disk(filepath, markdown_dir=None):
     
     return None
 
-def improved_document_chunker(
-    documents: List[Document],
-    min_chunk_size: int = 300,
-    chunk_size: int = 1500,
-    chunk_overlap: int = 150
-) -> List[Document]:
+def improved_document_chunker(documents: List[Document], min_chunk_size=300, chunk_size=1500, chunk_overlap=150) -> List[Document]:
     """
-    Chunk markdown documents, preferring headings, paragraphs, lists, then sentence boundaries,
-    and only overshooting if absolutely no separator is found.
+    An improved document chunker that uses MarkdownTextSplitter and
+    merges small chunks with the *preceding* chunk to prevent very short chunks,
+    ensuring all content is preserved.
+
+    Args:
+        documents: List of Document objects to split (expected to have Markdown content).
+        min_chunk_size: Minimum size threshold for identifying small chunks (characters).
+                        Chunks smaller than this will be merged with the previous one if possible.
+        chunk_size: Target maximum size of each chunk in characters for the initial split.
+        chunk_overlap: Number of characters to overlap between chunks during the initial split.
+
+    Returns:
+        List of chunked Document objects with preserved metadata.
     """
-    logging.info(f"Starting improved document chunking for {len(documents)} docs.")
+    logging.info(f"Starting improved document chunking for {len(documents)} documents using MarkdownTextSplitter and backward merging.")
 
-    # Prioritized separators
-    separators = [
-        "\n## ",
-        "\n# ",
-        "\n\n",    # paragraph break
-        "\n- ",    # list
-        "\n* ",
-        "\n"       # single line break
-    ]
+    # Initialize the Markdown splitter
+    text_splitter = MarkdownTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap
+    )
 
-    def merge_small_chunks_backward(texts, metas, min_size):
-        i = len(texts) - 1
-        while i > 0:
-            if len(texts[i].strip()) < min_size:
-                texts[i-1] += "\n\n" + texts[i]
-                del texts[i], metas[i]
-            i -= 1
-        return texts, metas
+    # --- REFINED MERGE FUNCTION ---
+    def merge_small_chunks_backward(texts: List[str], metadatas: List[dict], min_size: int) -> tuple[List[str], List[dict]]:
+        """
+        Merges chunks smaller than min_size with the *preceding* chunk.
+        Iterates backward to handle multiple small chunks correctly.
+        """
+        if not texts:
+            return [], []
 
-    def custom_split(text: str) -> List[str]:
-        parts, start, L = [], 0, len(text)
-        sentence_boundary = re.compile(r'(?<=[\.?!])\s+')
+        merged_texts = list(texts)
+        merged_metadatas = [m.copy() for m in metadatas] # Ensure we work with copies
 
-        while start < L:
-            end_limit = min(start + chunk_size, L)
+        i = len(merged_texts) - 1
+        while i > 0: # Start from the second-to-last chunk and go backward
+            current_text = merged_texts[i]
+            if len(current_text.strip()) < min_size:
+                # If the current chunk is too small, merge it with the previous one
+                logging.debug(f"Merging small chunk (index {i}, size {len(current_text.strip())}) backward.")
 
-            # 1) Try the markdown headings / paragraphs / lists etc.
-            best_pos, best_len = -1, 0
-            for sep in separators:
-                p = text.rfind(sep, start, end_limit)
-                if p > best_pos:
-                    best_pos, best_len = p, len(sep)
+                # Prepend the small chunk's content to the previous chunk's content
+                # Use a double newline as a separator
+                merged_texts[i-1] = merged_texts[i-1] + "\n\n" + current_text
 
-            if best_pos >= 0:
-                split_end = best_pos + best_len
+                # --- Metadata Merging Strategy ---
+                # Simple strategy: Keep the metadata of the preceding chunk (i-1)
+                # Optionally, you could try to combine titles or other fields if needed.
+                # For now, we just discard the metadata of the small chunk being merged.
+                # Example combining titles (if desired):
+                # prev_meta = merged_metadatas[i-1]
+                # current_meta = merged_metadatas[i]
+                # if "chunk_title" in current_meta and "chunk_title" not in prev_meta:
+                #     prev_meta["chunk_title"] = current_meta["chunk_title"]
+                # elif "chunk_title" in prev_meta and "chunk_title" in current_meta and prev_meta["chunk_title"] != current_meta["chunk_title"]:
+                #     prev_meta["chunk_title"] = f"{prev_meta['chunk_title']} | {current_meta['chunk_title']}"
+                # merged_metadatas[i-1] = prev_meta # Update the previous metadata
 
-            else:
-                # 2) Try any sentence boundary
-                window = text[start:end_limit]
-                boundaries = [m.end() for m in sentence_boundary.finditer(window)]
-                if boundaries:
-                    # pick the last boundary in that chunk
-                    split_end = start + boundaries[-1]
-                else:
-                    # 3) fallback: overshoot to next markdown sep (or end)
-                    next_pos, next_len = None, 0
-                    for sep in separators:
-                        p = text.find(sep, end_limit)
-                        if p != -1 and (next_pos is None or p < next_pos):
-                            next_pos, next_len = p, len(sep)
-                    split_end = (next_pos + next_len) if next_pos is not None else L
+                # Remove the merged chunk (text and metadata)
+                del merged_texts[i]
+                del merged_metadatas[i]
 
-            parts.append(text[start:split_end])
-            # always apply overlap
-            start = max(split_end - chunk_overlap, split_end)
+                # Important: Since we deleted element at index i, the next element to check
+                # is now also at index i (if i < len(merged_texts)).
+                # However, our loop condition `i > 0` and decrementing `i` handles this correctly.
+                # We don't need to adjust `i` further here after deletion when iterating backward.
 
-        return parts
+            i -= 1 # Move to the previous chunk
 
-    chunks: List[Document] = []
-    for doc in documents:
-        raw = (doc.page_content or "").strip()
-        if not raw:
+        # After backward merging, check if the *first* chunk is now too small.
+        # It cannot be merged backward, so log a warning if it's smaller than min_size.
+        if merged_texts and len(merged_texts[0].strip()) < min_size:
+             logging.warning(f"The first chunk remains smaller than min_chunk_size ({len(merged_texts[0].strip())} chars) after backward merging.")
+
+        return merged_texts, merged_metadatas
+    # --- END REFINED MERGE FUNCTION ---
+
+    result_chunks = []
+    total_chunks_processed = 0
+
+    for doc_index, doc in enumerate(documents):
+        if not doc.page_content or not doc.page_content.strip():
+            logging.warning(f"Skipping empty document: {doc.metadata.get('source_file', f'doc_index_{doc_index}')}")
             continue
 
-        # --- flatten code fences & merge tables ---
-        raw = re.sub(r"```.*?```", lambda m: m.group(0).replace("\n", " "), raw, flags=re.DOTALL)
-        lines, buf = raw.splitlines(), []
-        merged = []
-        for line in lines:
-            if line.strip().startswith("|") and "|" in line:
-                buf.append(line)
-            else:
-                if buf:
-                    merged.append(" ".join(buf)); buf = []
-                merged.append(line)
-        if buf:
-            merged.append(" ".join(buf))
-        clean = "\n".join(merged)
+        doc_metadata = doc.metadata.copy()
 
-        # split up
-        parts = custom_split(clean)
+        # Extract document title/heading (same logic as before)
+        content_lines = doc.page_content.strip().split('\n')
+        doc_title = None
+        for line in content_lines[:5]:
+            match = re.match(r'^#{{1,6}}\s+(.+)$', line)
+            if match:
+                doc_title = match.group(1).strip()
+                break
+        if not doc_title and content_lines:
+            doc_title = content_lines[0].strip()
+            if len(doc_title) > 100:
+                 doc_title = doc_title[:97] + "..."
+        if doc_title:
+            doc_metadata["doc_title"] = doc_title
 
-        # attach metadata
-        metas = []
-        for i, _ in enumerate(parts):
-            m = doc.metadata.copy()
-            m["initial_chunk_index"] = i
-            metas.append(m)
+        # Split the document content using MarkdownTextSplitter
+        split_texts = text_splitter.split_text(doc.page_content)
 
-        # merge too-small
-        merged_txts, merged_metas = merge_small_chunks_backward(parts, metas, min_chunk_size)
+        if not split_texts:
+             logging.warning(f"MarkdownTextSplitter produced no chunks for document: {doc.metadata.get('source_file', f'doc_index_{doc_index}')}")
+             continue
 
-        # finalize
-        total = len(merged_txts)
-        for idx, (txt, meta) in enumerate(zip(merged_txts, merged_metas)):
-            # trim stray bullets
-            txt = re.sub(r"[\r\n]+\s*[-*]\s*$", "", txt).strip()
-            meta["chunk_index"] = idx
-            meta["chunk_count"] = total
-            if txt:
-                chunks.append(Document(page_content=txt, metadata=meta))
+        # Prepare initial metadata for each chunk
+        initial_metadatas = []
+        for i, text_chunk in enumerate(split_texts):
+            chunk_metadata = doc_metadata.copy()
+            # Store initial index for reference, though it will be overwritten later
+            chunk_metadata["initial_chunk_index"] = i
 
-    logging.info(f"Chunking completed: {len(chunks)} chunks generated.")
-    return chunks
+            # Extract chunk title/heading (same logic as before)
+            chunk_lines = text_chunk.strip().split('\n')
+            chunk_title = None
+            for line in chunk_lines[:3]:
+                match = re.match(r'^#{{1,6}}\s+(.+)$', line)
+                if match:
+                    chunk_title = match.group(1).strip()
+                    break
+            if chunk_title:
+                chunk_metadata["chunk_title"] = chunk_title
 
+            initial_metadatas.append(chunk_metadata)
 
+        # Merge small chunks using the backward merging function
+        merged_texts, merged_metadatas = merge_small_chunks_backward(split_texts, initial_metadatas, min_chunk_size)
 
+        # Create final Document objects for the merged chunks
+        num_chunks_in_doc = len(merged_texts)
+        for i, (text, metadata) in enumerate(zip(merged_texts, merged_metadatas)):
+            # Update chunk indices and count based on the final list after merging
+            metadata["chunk_index"] = i
+            metadata["chunk_count"] = num_chunks_in_doc
+
+            # Remove the temporary initial index if it exists
+            metadata.pop("initial_chunk_index", None)
+
+            # Log if a chunk is still small (should only be the first one potentially)
+            if len(text.strip()) < min_chunk_size:
+                 # This logging might be redundant given the warning inside merge_small_chunks_backward
+                 pass # logging.info(f"Including first chunk smaller than min_size ({len(text.strip())}) from {metadata.get('source_file', 'unknown')}")
+
+            result_chunks.append(Document(
+                page_content=text.strip(),
+                metadata=metadata
+            ))
+        total_chunks_processed += num_chunks_in_doc
+
+    logging.info(f"Chunking completed: generated {len(result_chunks)} total chunks from {len(documents)} documents.")
+    return result_chunks
 
 
 def load_existing_qdrant_store(
