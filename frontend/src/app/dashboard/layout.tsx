@@ -1,5 +1,5 @@
 // app/dashboard/layout.tsx
-import AuthGuard from '../../app/components/AuthGuard'; // Adjust based on actual folder structure'; // Adjust the import path if necessary
+import AuthGuard from '../components/AuthGuard'; // Adjust based on actual folder structure'; // Adjust the import path if necessary
 import React from 'react';
 
 export default function DashboardLayout({

@@ -85,6 +85,9 @@ class UserInfoOut(BaseModel): # Matches user_info structure
     name: str
     email: EmailStr
     student_id: str
+    majors: Optional[str] = None
+    minors: Optional[str] = None
+    faculty: Optional[str] = None
 
 class MoodleCoursesWrapperOut(BaseModel): # Matches courses structure
     courses: List[CourseOutMinimal]

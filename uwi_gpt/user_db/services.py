@@ -8,7 +8,7 @@ from typing import Optional, List
 from .models import UserToken
 import time
 from .schemas import UserTokenCreate
-
+from sqlalchemy.future import select
 def hash_token(token: str) -> str:
     """Create a secure hash of a token for storage"""
     return hashlib.sha256(token.encode()).hexdigest()
@@ -140,12 +140,14 @@ async def create_user(db: AsyncSession, data: UserCreate):
         email=data.email,
         student_id=data.student_id,
         password_hash=hashed_pw,
+        majors=data.majors,
+        minors=data.minors,
+        faculty=data.faculty,
     )
     db.add(user)
     await db.commit()
     await db.refresh(user)
     return user
-
 
 async def get_user_by_id(db: AsyncSession, user_id: int):
     result = await db.execute(select(User).where(User.id == user_id))

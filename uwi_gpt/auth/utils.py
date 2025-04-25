@@ -70,7 +70,7 @@ async def create_access_token(data: Dict[str, Any], db: AsyncSession, request: O
     print(f"DEBUG: Stored access token record, DB ID: {token_id}, JTI: {token_jti}")
     return token_string, expires_at, token_id
 
-# --- create_refresh_token (Corrected) ---
+
 async def create_refresh_token(data: Dict[str, Any], db: AsyncSession, request: Optional[Request] = None) -> Tuple[str, int, int]:
     expires = jwt_settings.refresh_token_expire_seconds
     token_string, token_jti = create_token(data, expires, "refresh")
@@ -80,7 +80,7 @@ async def create_refresh_token(data: Dict[str, Any], db: AsyncSession, request: 
     return token_string, expires_at, token_id
 
 
-# --- get_current_user (FIXED with Eager Loading) ---
+
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db)

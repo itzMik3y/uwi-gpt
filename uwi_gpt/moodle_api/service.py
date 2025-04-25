@@ -17,7 +17,7 @@ import traceback
 
 # Relative import for credentials models
 from .models import MoodleCredentials, SASCredentials
-
+from sqlalchemy.future import select
 # Imports for the data saving function & helpers
 from user_db.services import (
     get_course_by_id,
@@ -361,7 +361,6 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
 
     # Step 1: Start at Moodle login page to trigger redirects
     moodle_login_url = "https://ban.mona.uwi.edu:9077/ssb8x/twbkwbis.P_WWWLogin"
-    # initial_response = session.get(moodle_login_url, headers=headers, allow_redirects=True)
     initial_response = session.get(
         moodle_login_url, headers=headers, allow_redirects=True
     )
@@ -416,23 +415,21 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
     else:
         print("Login may have failed. Check response.")
 
+    # ===== TRANSCRIPT DATA RETRIEVAL =====
     gpa_calc_page_url = "https://ban.mona.uwi.edu:9077/ssb8x/uwm_gpacalculator.gpa_ssb_student_unofficial"
     gpa_form_subm_page = session.get(gpa_calc_page_url, headers=headers)
 
     soup = BeautifulSoup(gpa_form_subm_page.text, "html.parser")
-
-    # # At this point, session is authenticated and can be used for scraping
-    # return {
-    #     "success": True,
-    #     "message": "Login successful.",
-    #     "cookies": session.cookies.get_dict()
-    # }
 
     pidm_input = soup.find("input", {"name": "p_pidm"})
     radio_input = soup.find("input", {"name": "p_degr_seq", "type": "radio"})
 
     if not pidm_input or not radio_input:
         print("❌ Could not find necessary form inputs. Check if session expired.")
+        return {
+            "success": False,
+            "message": "Could not find necessary form inputs. Check if session expired.",
+        }
     else:
         p_pidm = pidm_input.get("value")
         p_degr_seq = radio_input.get("value")  # e.g., "1:202210"
@@ -446,13 +443,12 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
         gpa_courses_page = session.post(
             submit_url, data=form_payload, headers=headers_form
         )
-        # gpa_soup = BeautifulSoup(gpa_courses_page.text, 'html.parser')
 
         reset_payload = {
             "p_pidm": p_pidm,
             "p_degr_seq": p_degr_seq,
             "v_user": p_pidm,  # same as s_pidm
-            "trm_in": "202210",  # default term or the one you want to reset, might need to be dynamic but should work right now
+            "trm_in": "202210",  # default term or the one you want to reset
             "crs_in": "",
             "grd_in": "***",
             "btnSubmit": "RESET",
@@ -486,8 +482,6 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
         )
 
         print("this is the target page url: ", target_page.url)
-
-        # tagert_page_soup = BeautifulSoup(target_page.text, 'html.parser')
 
         def _safe_float(value_str):
             """Safely convert a string to float, returning None on failure."""
@@ -740,11 +734,6 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
                             course_data = _parse_course_cells(course_cells_for_parsing)
                         if course_data:
                             current_term_data["courses"].append(course_data)
-                        # else:
-                        # print(f"Debug: Could not parse first course for term {term_code}. Cells: {first_course_cells}") # Optional debug
-                        # else:
-                        # print(f"Debug: Not enough cells for first course in term {term_code}. Found {len(first_course_cells)} cells.") # Optional debug
-
                     else:
                         # Invalid term code found where expected
                         if current_term_data:  # Save previous valid term
@@ -760,17 +749,6 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
                     )  # Pass the full list of cells found
                     if course_data:
                         current_term_data["courses"].append(course_data)
-                        # else:
-                        # This might be an empty row or something else, ignore for courses.
-                        # Check for the specific empty row structure
-                        is_empty_separator = (
-                            len(cells) == 1
-                            and cells[0].get("colspan") == "14"
-                            and cells[0].text.strip() == "\xa0"
-                        )  # Check for &nbsp;
-                        if not is_empty_separator:
-                            # print(f"Debug: Row not parsed as subsequent course in term {current_term_data['term_code']}. Cells: {cells}") # Optional debug
-                            pass
 
             # Add the last processed term if it exists
             if current_term_data:
@@ -789,22 +767,94 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
                 result["overall"]["total_credits_earned"] = most_recent_term.get(
                     "credits_earned_to_date"
                 )
-            else:
-                # If no terms were parsed, try to find overall GPA elsewhere if possible (not obvious in this HTML)
-                pass
 
             return result
 
-        # courses_by_term = parse_gpa_html(target_page.text)
-        # gpa_summary_by_term = parse_term_gpa_metadata(target_page.text)
+        transcript_data = parse_transcript_data(target_page.text)
 
-        data = parse_transcript_data(target_page.text)
+        # ===== MAJOR/MINOR INFO RETRIEVAL =====
+        print("Fetching major/minor information...")
+        
+        # Submit term for accessing student details
+        term_submit_page = "https://ban.mona.uwi.edu:9077/ssb8x/bwskflib.P_SelDefTerm"
+        term_submit_resp = session.get(term_submit_page, headers=headers)
+        term_soup = BeautifulSoup(term_submit_resp.text, "html.parser")
+
+        term_hidden_inputs = term_soup.find("input", {"name": "name_var"})
+        if not term_hidden_inputs:
+            print("Warning: Could not find term selection inputs")
+            # Continue with partial data rather than failing completely
+            student_info = {"Majors": [], "Minors": [], "Faculty": None}
+        else:
+            term_hidden_value = term_hidden_inputs.get("value")
+            term_select = "202520"  # hardcoded for now (2025/2026 semester 2)
+
+            term_payload = {
+                "name_var": term_hidden_value,
+                "term_in": term_select,
+            }
+
+            student_registration_page = "https://ban.mona.uwi.edu:9077/ssb8x/bwcklibs.P_StoreTerm"
+            student_registration_resp = session.post(
+                student_registration_page, data=term_payload, headers=headers_form
+            )
+
+            # Access the major/minor info page
+            fac_maj_min_page = "https://ban.mona.uwi.edu:9077/ssb8x/UWM_CHANGE_MAJOR.P_DisplayHello"
+            fac_maj_min_resp = session.get(fac_maj_min_page, headers=headers)
+
+            def parse_student_info(html_content):
+                soup = BeautifulSoup(html_content, "html.parser")
+                info = {"Majors": [], "Minors": [], "Faculty": None}
+                rows = soup.find_all("tr")
+
+                for row in rows:
+                    cells = row.find_all("td")
+                    if len(cells) >= 4:
+                        header1 = cells[0].get_text(strip=True)
+                        data1 = (
+                            cells[1].find("b").get_text(strip=True)
+                            if cells[1].find("b")
+                            else ""
+                        )
+                        header2 = cells[2].get_text(strip=True)
+                        data2 = (
+                            cells[3].find("b").get_text(strip=True)
+                            if cells[3].find("b")
+                            else ""
+                        )
+
+                        if data1 and "Term" not in data1:
+                            if "Major" in header1:
+                                info["Majors"].append(data1)
+                            if "Minor" in header1:
+                                info["Minors"].append(data1)
+                            if "Faculty/College" in header1:
+                                info["Faculty"] = data1
+
+                        if data2 and "Term" not in data2:
+                            if "Major" in header2:
+                                info["Majors"].append(data2)
+                            if "Minor" in header2:
+                                info["Minors"].append(data2)
+                            if "Faculty/College" in header2:
+                                info["Faculty"] = data2
+
+                return info
+
+            student_info = parse_student_info(fac_maj_min_resp.text)
+            print(f"Found student info: {len(student_info['Majors'])} majors, {len(student_info['Minors'])} minors")
+
+        # Combine the data and return
+        transcript_data["student_info"] = {
+            "majors": student_info["Majors"],
+            "minors": student_info["Minors"],
+            "faculty": student_info["Faculty"]
+        }
 
         return {
             "success": True,
-            # "courses": courses_by_term,
-            # "gpa_summary": gpa_summary_by_term
-            "data": data,
+            "data": transcript_data,
         }
 
 
@@ -973,6 +1023,33 @@ async def save_initial_scraped_data(
             and isinstance(sas_payload.get("data"), dict)
         ):
             sas_data = sas_payload["data"]
+            
+            # --- Update user with major/minor/faculty info ---
+            if "student_info" in sas_data:
+                student_info = sas_data["student_info"]
+                
+                # Get user record
+                user_result = await db.execute(select(User).where(User.id == user_id))
+                user = user_result.scalar_one_or_none()
+                
+                if user:
+                    # Process majors (convert list to comma-separated string)
+                    if "majors" in student_info and isinstance(student_info["majors"], list) and student_info["majors"]:
+                        user.majors = ",".join(student_info["majors"])
+                    
+                    # Process minors (convert list to comma-separated string)
+                    if "minors" in student_info and isinstance(student_info["minors"], list) and student_info["minors"]:
+                        user.minors = ",".join(student_info["minors"])
+                    
+                    # Set faculty
+                    if "faculty" in student_info and student_info["faculty"]:
+                        user.faculty = student_info["faculty"]
+                    
+                    logger.info(f"SYNC SAVE: Updated user {user_id} with academic program information")
+                    await db.flush()  # Flush changes to database session
+                else:
+                    logger.warning(f"SYNC SAVE: User {user_id} not found for academic info update")
+            
             terms_data = sas_data.get("terms", [])
             logger.info(
                 f"SYNC SAVE: Processing {len(terms_data)} SAS terms/grades for user {user_id}"
@@ -1056,7 +1133,6 @@ async def save_initial_scraped_data(
     logger.info(
         f"SYNC SAVE: Finished processing initial scraped data for user {user_id}"
     )
-    # NO COMMIT/ROLLBACK HERE - handled by calling route
 
 
 def fetch_extra_sas_info(credentials: SASCredentials):
