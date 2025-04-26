@@ -14,6 +14,7 @@ from sqlalchemy.orm import DeclarativeBase
 import datetime
 import time
 
+
 class Base(AsyncAttrs, DeclarativeBase):
     pass
 
@@ -28,12 +29,19 @@ class User(Base):
     student_id = Column(String, unique=True, nullable=False)
     password_hash = Column(String, nullable=False)
 
+    role = Column(String, nullable=False)  # e.g. "student", "admin", etc.
+
     terms = relationship("Term", back_populates="user")
     enrollments = relationship("EnrolledCourse", back_populates="user")
     grades = relationship("CourseGrade", back_populates="user")
     courses = relationship("Course", secondary="enrolled_courses", viewonly=True)
-    tokens = relationship("UserToken", back_populates="user", cascade="all, delete-orphan")
-    
+    tokens = relationship(
+        "UserToken", back_populates="user", cascade="all, delete-orphan"
+    )
+
+    bookings = relationship("Booking", back_populates="student")
+    slots = relationship("AvailabilitySlot", back_populates="admin")
+
 
 class Course(Base):
     __tablename__ = "courses"
@@ -85,9 +93,9 @@ class EnrolledCourse(Base):
     course_code = Column(String)
     course_title = Column(String)
     credit_hours = Column(Float)
-    
+
     # No longer storing grades here - just current enrollments
-    
+
     user = relationship("User", back_populates="enrollments")
     course = relationship("Course", back_populates="enrollments")
     term = relationship("Term", back_populates="enrolled_courses")
@@ -106,7 +114,7 @@ class CourseGrade(Base):
     credit_hours = Column(Float)
     grade_earned = Column(String)
     whatif_grade = Column(String)
-    
+
     # Additional fields that might be useful
     is_historical = Column(Boolean, default=True)  # Flag to distinguish past courses
     earned_date = Column(Integer)  # Unix timestamp when grade was earned
@@ -122,13 +130,42 @@ class UserToken(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     token_type = Column(String, nullable=False)  # 'access' or 'refresh'
-    token_key = Column(String, nullable=False, index=True)  # First 8 chars of the token as lookup key
+    token_key = Column(
+        String, nullable=False, index=True
+    )  # First 8 chars of the token as lookup key
     token_hash = Column(String, nullable=False)  # Hashed token for security
     expires_at = Column(Integer, nullable=False)  # Unix timestamp for expiration
     created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
     is_blacklisted = Column(Boolean, nullable=False, default=False)
-    device_info = Column(String, nullable=True)  # Optional device info (user agent, etc.)
-    ip_address = Column(String, nullable=True)   # Optional IP address of the client
+    device_info = Column(
+        String, nullable=True
+    )  # Optional device info (user agent, etc.)
+    ip_address = Column(String, nullable=True)  # Optional IP address of the client
 
     # Relationships
     user = relationship("User", back_populates="tokens")
+
+
+class AvailabilitySlot(Base):
+    __tablename__ = "availability_slots"
+    id = Column(Integer, primary_key=True)
+    admin_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    start_time = Column(DateTime)
+    end_time = Column(DateTime)
+    is_booked = Column(Boolean, default=False)
+
+    admin = relationship("User", back_populates="slots")
+    booking = relationship("Booking", uselist=False, back_populates="slot")
+
+
+class Booking(Base):
+    __tablename__ = "bookings"
+    id = Column(Integer, primary_key=True)
+    slot_id = Column(
+        Integer, ForeignKey("availability_slots.id"), nullable=False, index=True
+    )
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    created_at = Column(DateTime)
+
+    slot = relationship("AvailabilitySlot", back_populates="booking")
+    student = relationship("User", back_populates="bookings")

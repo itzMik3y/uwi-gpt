@@ -1,4 +1,5 @@
 # moodle_api/router.py
+from datetime import datetime
 import logging
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
@@ -15,11 +16,15 @@ from user_db.schemas import (
     CourseGradeOut,
 )
 from user_db.services import (
+    book_stu_slot,
+    create_availability_slot,
     create_course,
     create_term,
     create_user,
     enroll_user_in_course,
+    get_admin_avail_slots,
     get_enrollments_by_user,
+    get_stu_available_slots,
     get_terms_by_user,
     get_user_by_id,
     list_courses,
@@ -461,3 +466,29 @@ async def get_extra_sas_info_endpoint(
     except Exception as e:
         logger.error(f"Error fetching extra SAS info: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# scheduling routes
+@router.post("/scheduler/slots")
+def create_slot(
+    admin_id: int,
+    start_time: datetime,
+    end_time: datetime,
+    db: AsyncSession = Depends(get_db),
+):
+    return create_availability_slot(db, admin_id, start_time, end_time)
+
+
+@router.post("/scheduler/bookings")
+def book_slot(slot_id: int, student_id: int, db: AsyncSession = Depends(get_db)):
+    return book_stu_slot(db, slot_id, student_id)
+
+
+@router.get("/scheduler/slots/available")
+def available_slots(db: AsyncSession = Depends(get_db)):
+    return get_stu_available_slots(db)
+
+
+@router.get("/scheduler/admin/slots")
+def admin_slots(admin_id: int, db: AsyncSession = Depends(get_db)):
+    return get_admin_avail_slots(db, admin_id)
