@@ -1,3 +1,4 @@
+import datetime
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 
@@ -16,6 +17,47 @@ class UserOut(BaseModel):
     lastname: str
     email: EmailStr
     student_id: str
+
+    class Config:
+        from_attributes = True
+
+
+class AdminIn(BaseModel):
+    requesting_admin_id: int
+    firstname: str
+    lastname: str
+    email: EmailStr
+    password: str
+    is_superadmin: Optional[bool] = False
+    login_id: int
+
+
+class AdminCreate(
+    BaseModel
+):  # probably adjust for superadmin, making it different from normal admin
+    firstname: str
+    lastname: str
+    email: EmailStr
+    password: str
+    is_superadmin: Optional[bool] = False
+    login_id: int
+
+
+class AdminUpdate(BaseModel):
+    firstname: Optional[str] = None
+    lastname: Optional[str] = None
+    email: Optional[EmailStr] = None
+    password: Optional[str] = None
+    login_id: Optional[int] = None
+
+
+class AdminOut(BaseModel):
+    id: int
+    firstname: str
+    lastname: str
+    email: EmailStr
+    is_superadmin: bool
+    login_id: int
 
     class Config:
         from_attributes = True
@@ -94,6 +136,7 @@ class CourseGradeOut(CourseGradeCreate):
     class Config:
         from_attributes = True
 
+
 class UserTokenCreate(BaseModel):
     user_id: int
     token_type: str
@@ -103,6 +146,7 @@ class UserTokenCreate(BaseModel):
     device_info: Optional[str] = None
     ip_address: Optional[str] = None
 
+
 class UserTokenOut(BaseModel):
     id: int
     user_id: int
@@ -111,6 +155,41 @@ class UserTokenOut(BaseModel):
     expires_at: int
     is_blacklisted: bool
     device_info: Optional[str] = None
-    
+
+    class Config:
+        from_attributes = True
+
+
+class SlotCreate(BaseModel):
+    admin_id: int
+    start_time: datetime
+    end_time: datetime
+
+
+class SlotOut(BaseModel):
+    id: int
+    admin_id: int
+    start_time: datetime
+    end_time: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SlotSummary(BaseModel):
+    start_time: datetime
+    end_time: datetime
+
+
+class SlotBulkCreate(BaseModel):
+    admin_id: int
+    slots: list[SlotSummary]
+
+
+class SlotBulkOut(BaseModel):
+    id: int
+    admin_id: int
+    slots: list[SlotSummary]
+
     class Config:
         from_attributes = True

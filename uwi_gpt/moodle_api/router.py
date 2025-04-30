@@ -4,10 +4,15 @@ import logging
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
 from user_db.schemas import (
+    AdminCreate,
+    AdminIn,
+    AdminOut,
+    AdminUpdate,
     CourseCreate,
     CourseOut,
     EnrollmentCreate,
     EnrollmentOut,
+    SlotOut,
     TermCreate,
     TermOut,
     UserCreate,
@@ -17,12 +22,16 @@ from user_db.schemas import (
 )
 from user_db.services import (
     book_stu_slot,
+    create_admin,
     create_availability_slot,
     create_course,
     create_term,
     create_user,
+    delete_admin,
     enroll_user_in_course,
     get_admin_avail_slots,
+    get_admin_by_id,
+    get_all_admins,
     get_enrollments_by_user,
     get_stu_available_slots,
     get_terms_by_user,
@@ -33,6 +42,8 @@ from user_db.services import (
     create_or_update_course_grade,
     get_course_grades_by_user,
     get_course_grades_by_term,
+    superadmin_required,
+    update_admin,
 )
 from .models import MoodleCredentials, SASCredentials
 from .service import fetch_moodle_details, fetch_uwi_sas_details, fetch_extra_sas_info
@@ -469,7 +480,7 @@ async def get_extra_sas_info_endpoint(
 
 
 # scheduling routes
-@router.post("/scheduler/slots")
+@router.post("/scheduler/slot", response_model=List[SlotOut])
 def create_slot(
     admin_id: int,
     start_time: datetime,
@@ -492,3 +503,70 @@ def available_slots(db: AsyncSession = Depends(get_db)):
 @router.get("/scheduler/admin/slots")
 def admin_slots(admin_id: int, db: AsyncSession = Depends(get_db)):
     return get_admin_avail_slots(db, admin_id)
+
+
+@router.post("/admin/create_admin")
+async def create_superadmin_for_db(
+    adminData: AdminIn,
+    db: AsyncSession = Depends(get_db),
+):
+    await superadmin_required(db, adminData.requesting_admin_id)
+    return await create_admin(
+        db,
+        AdminCreate(
+            firstname=adminData.firstname,
+            lastname=adminData.lastname,
+            email=adminData.email,
+            password=adminData.password,
+            is_superadmin=adminData.is_superadmin,
+            login_id=adminData.login_id,
+        ),
+    )
+
+
+# ADMIN CRUD ROUTES
+
+
+# Create an Admin
+@router.post("/admin", response_model=AdminOut)
+async def create_admin_for_db(admin: AdminCreate, db: AsyncSession = Depends(get_db)):
+    try:
+        created_admin = await create_admin(db, admin)
+        return created_admin
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# Get all Admins
+@router.get("/admin", response_model=List[AdminOut])
+async def list_admins(db: AsyncSession = Depends(get_db)):
+    return await get_all_admins(db)
+
+
+# Get one Admin
+@router.get("/admin/{admin_id}", response_model=AdminOut)
+async def get_admin(admin_id: int, db: AsyncSession = Depends(get_db)):
+    admin = await get_admin_by_id(db, admin_id)
+    if not admin:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    return admin
+
+
+# Update an Admin
+@router.put("/admin/{admin_id}", response_model=AdminOut)
+async def update_admin_to_db(
+    admin_id: int, updates: AdminUpdate, db: AsyncSession = Depends(get_db)
+):
+    updated_admin = await update_admin(db, updates, admin_id)
+    if not updated_admin:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    return updated_admin
+
+
+# Delete an Admin
+@router.delete("/admin/{admin_id}")
+async def delete_admin_from_db(admin_id: int, db: AsyncSession = Depends(get_db)):
+    deleted_admin = await delete_admin(db, admin_id)
+    if not deleted_admin:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    return {"message": "Admin deleted successfully"}

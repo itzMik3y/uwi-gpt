@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
+from http.client import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from .models import (
+    Admin,
     AvailabilitySlot,
     Booking,
     Course,
@@ -10,8 +12,13 @@ from .models import (
     CourseGrade,
 )
 from .schemas import (
+    AdminCreate,
+    AdminUpdate,
     CourseCreate,
     EnrollmentCreate,
+    SlotBulkCreate,
+    SlotBulkOut,
+    SlotCreate,
     TermCreate,
     UserCreate,
     CourseGradeCreate,
@@ -346,6 +353,13 @@ async def get_course_grades_by_term(db: AsyncSession, user_id: int, term_id: int
 async def create_availability_slot(
     db: AsyncSession, admin_id: int, start_time: datetime, end_time: datetime
 ):
+
+    result = await db.execute(select(Admin).where(Admin.id == admin_id))
+    admin = result.scalars().first()
+
+    if not admin:
+        raise ValueError("Admin not found")
+
     if start_time >= end_time:
         raise ValueError("Start time must be before end time")
 
@@ -357,6 +371,39 @@ async def create_availability_slot(
     await db.commit()  # ✅ async commit
     await db.refresh(slot)  # ✅ async refresh
     return slot
+
+
+async def create_bulk_availability_slots(db: AsyncSession, data: SlotBulkCreate):
+    result = await db.execute(select(Admin).where(Admin.id == data.admin_id))
+    admin = result.scalars().first()
+
+    if not admin:
+        raise HTTPException(status_code=404, detail="Admin not found")
+
+    created_slots = []
+
+    for slot in data.slots:
+        if slot.start_time >= slot.end_time:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid time range: {slot.start_time} >= {slot.end_time}",
+            )
+
+        new_slot = AvailabilitySlot(
+            admin_id=data.admin_id,
+            start_time=slot.start_time,
+            end_time=slot.end_time,
+            is_booked=False,
+        )
+        db.add(new_slot)
+        created_slots.append(new_slot)
+
+    await db.commit()
+
+    for slot in created_slots:
+        await db.refresh(slot)
+
+    return created_slots
 
 
 async def book_stu_slot(db: AsyncSession, slot_id: str, student_id: str):
@@ -423,3 +470,121 @@ async def get_stu_available_slots(db: AsyncSession):
     stmt = select(AvailabilitySlot).where(AvailabilitySlot.is_booked == False)
     result = await db.execute(stmt)
     return result.scalars().all()
+
+
+# SUPERADMIN
+
+
+# superadmin check
+async def superadmin_required(db: AsyncSession, admin_id: str):
+    result = await db.execute(select(Admin).where(Admin.id == admin_id))
+    admin = result.scalars().first()
+
+    if not admin or not admin.is_superadmin:
+        raise HTTPException(status_code=403, detail="SuperAdmin privileges required")
+
+    return admin
+
+
+# superadmin create
+async def seed_superadmin(db: AsyncSession):
+    # Check if a superadmin already exists
+    result = await db.execute(select(Admin).where(Admin.is_superadmin == True))
+    superadmin = result.scalars().first()
+
+    if superadmin:
+        print("[Seeder] SuperAdmin already exists, skipping seed.")
+        return
+
+    # If no superadmin, create one
+    await create_admin(
+        db=db,
+        data=AdminCreate(
+            firstname="Default",
+            lastname="SuperAdmin",
+            email="superadmin@uwi.edu",
+            password="superadmin123",
+            is_superadmin=True,
+            login_id=999123456,
+        ),
+    )
+    print("[Seeder] SuperAdmin created successfully!")
+
+
+# ADMIN CRUD OPERATIONS
+
+
+# create admin
+async def create_admin(
+    db: AsyncSession,
+    data: AdminCreate,
+):
+    existing_admin = await db.execute(select(Admin).where(Admin.email == data.email))
+    if existing_admin.scalars().first():
+        raise ValueError("Admin with this email already exists.")
+
+    admin = Admin(
+        firstname=data.firstname,
+        lastname=data.lastname,
+        email=data.email,
+        password_hash=hash_password(data.password),
+        is_superadmin=False,
+        login_id=data.login_id,
+    )
+    db.add(admin)
+    await db.commit()
+    await db.refresh(admin)
+    return admin
+
+
+# Get all Admins
+async def get_all_admins(db: AsyncSession):
+    result = await db.execute(select(Admin))
+    return result.scalars().all()
+
+
+# Get one Admin by ID
+async def get_admin_by_id(db: AsyncSession, admin_id: int):
+    result = await db.execute(select(Admin).where(Admin.id == admin_id))
+    return result.scalars().first()
+
+
+# Update an Admin
+async def update_admin(
+    db: AsyncSession,
+    data: AdminUpdate,
+    admin_id: int,
+):
+    result = await db.execute(select(Admin).where(Admin.id == admin_id))
+    admin: Admin = result.scalars().first()
+
+    if not admin:
+        return None
+
+    if data.firstname:
+        admin.firstname = data.firstname
+    if data.lastname:
+        admin.lastname = data.lastname
+    if data.email:
+        admin.email = data.email
+    if data.password:
+        admin.password_hash = hash_password(data.password)
+    if data.login_id:
+        admin.login_id = data.login_id
+
+    await db.commit()
+    await db.refresh(admin)
+    return admin
+
+
+# Delete an Admin
+async def delete_admin(db: AsyncSession, admin_id: int):
+    result = await db.execute(select(Admin).where(Admin.id == admin_id))
+    admin = result.scalars().first()
+
+    if not admin:
+        return None
+
+    await db.delete(admin)
+    await db.commit()
+    return admin

@@ -29,8 +29,6 @@ class User(Base):
     student_id = Column(String, unique=True, nullable=False)
     password_hash = Column(String, nullable=False)
 
-    role = Column(String, nullable=False)  # e.g. "student", "admin", etc.
-
     terms = relationship("Term", back_populates="user")
     enrollments = relationship("EnrolledCourse", back_populates="user")
     grades = relationship("CourseGrade", back_populates="user")
@@ -40,6 +38,19 @@ class User(Base):
     )
 
     bookings = relationship("Booking", back_populates="student")
+
+
+class Admin(Base):
+    __tablename__ = "admins"
+    id = Column(Integer, primary_key=True)
+    login_id = Column(Integer, unique=True, nullable=False, index=True)
+    firstname = Column(String, nullable=False)
+    lastname = Column(String, nullable=False)
+    email = Column(String, unique=True, nullable=False, index=True)
+    password_hash = Column(String, nullable=False)
+
+    is_superadmin = Column(Boolean, default=False)  # <-- New field!
+
     slots = relationship("AvailabilitySlot", back_populates="admin")
 
 
@@ -149,12 +160,12 @@ class UserToken(Base):
 class AvailabilitySlot(Base):
     __tablename__ = "availability_slots"
     id = Column(Integer, primary_key=True)
-    admin_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    admin_id = Column(Integer, ForeignKey("admins.id"), nullable=False, index=True)
     start_time = Column(DateTime)
     end_time = Column(DateTime)
     is_booked = Column(Boolean, default=False)
 
-    admin = relationship("User", back_populates="slots")
+    admin = relationship("Admin", back_populates="slots")
     booking = relationship("Booking", uselist=False, back_populates="slot")
 
 
