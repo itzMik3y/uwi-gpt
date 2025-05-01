@@ -34,7 +34,6 @@ import {
 } from 'lucide-react'
 import { formatTermLabel } from '@/utils/termUtils'
 
-/* —————————————————— Grade-Trends chart component —————————————————— */
 const GradeTrendsChart: React.FC = () => {
   const [view, setView] = useState<
     | 'semester'
@@ -46,28 +45,25 @@ const GradeTrendsChart: React.FC = () => {
   >('semester')
 
   const gradesData = useSelector((s: RootState) => s.auth.gradesData)
+  const completedTerms = gradesData?.terms.slice(2) || []
 
-  const terms =
-    gradesData?.terms
-      .filter((t) => t.term_code !== 'CURRENT')
-      .map((t) => ({
-        term: formatTermLabel(t.term_code),
-        semester: t.semester_gpa ?? 0,
-        cumulative: t.cumulative_gpa ?? 0,
-        credits: t.courses.reduce((sum, c) => sum + c.credit_hours, 0),
-        courses: t.courses.length,
-        atRisk: t.courses.filter((c) => /^F|EI/.test(c.grade_earned)).length
-      })) || []
+  const terms = completedTerms.map((t) => ({
+    term: formatTermLabel(t.term_code),
+    semester: t.semester_gpa ?? 0,
+    cumulative: t.cumulative_gpa ?? 0,
+    credits: t.courses.reduce((sum, c) => sum + c.credit_hours, 0),
+    courses: t.courses.length,
+    atRisk: t.courses.filter((c) => /^F|EI/.test(c.grade_earned)).length
+  }))
 
-  /* reverse so charts run chronologically L->R with newest on the right */
   const chartTerms = [...terms].reverse()
 
-  const distribution = (
-    gradesData?.terms.flatMap((t) => t.courses) || []
-  ).reduce<Record<string, number>>((acc, c) => {
-    acc[c.grade_earned] = (acc[c.grade_earned] || 0) + 1
-    return acc
-  }, {})
+  const distribution = completedTerms
+    .flatMap((t) => t.courses)
+    .reduce<Record<string, number>>((acc, c) => {
+      acc[c.grade_earned] = (acc[c.grade_earned] || 0) + 1
+      return acc
+    }, {})
 
   const distData = Object.entries(distribution)
     .map(([grade, count]) => ({ grade, count }))
@@ -84,12 +80,11 @@ const GradeTrendsChart: React.FC = () => {
 
   return (
     <div>
-      {/* selector */}
       <div className="flex flex-wrap justify-end gap-2 mb-3">
         {options.map((opt) => (
           <button
             key={opt.key}
-            onClick={() => setView(opt.key as any)}
+            onClick={() => setView(opt.key)}
             className={`px-3 py-1 rounded-full text-xs font-medium ${
               view === opt.key
                 ? 'bg-blue-600 text-white'
@@ -101,7 +96,6 @@ const GradeTrendsChart: React.FC = () => {
         ))}
       </div>
 
-      {/* chart */}
       <ResponsiveContainer width="100%" height={300}>
         {view === 'distribution' ? (
           <BarChart data={distData} margin={{ top: 10, bottom: 20 }}>
@@ -110,9 +104,7 @@ const GradeTrendsChart: React.FC = () => {
             <Tooltip />
             <Bar dataKey="count" name="Courses" fill="#f97316" />
           </BarChart>
-        ) : view === 'credits' ||
-          view === 'courses' ||
-          view === 'atRisk' ? (
+        ) : view === 'credits' || view === 'courses' || view === 'atRisk' ? (
           <BarChart data={chartTerms} margin={{ top: 10, bottom: 5 }}>
             <XAxis dataKey="term" tick={{ fontSize: 12 }} />
             <YAxis allowDecimals={false} />
@@ -172,19 +164,22 @@ type SemesterSectionProps = {
   onToggle: () => void
 }
 
-const SemesterSection: React.FC<SemesterSectionProps> = ({
-  term,
-  isOpen,
-  onToggle
-}) => (
+const SemesterSection: React.FC<{
+  term: {
+    term_code: string
+    courses: { course_code: string; course_title: string; grade_earned: string; credit_hours: number }[]
+    semester_gpa: number | null
+    cumulative_gpa: number | null
+  }
+  isOpen: boolean
+  onToggle: () => void
+}> = ({ term, isOpen, onToggle }) => (
   <div className="border rounded-md overflow-hidden">
     <div
       className="flex items-center justify-between p-2 bg-gray-50 cursor-pointer"
       onClick={onToggle}
     >
-      <h3 className="font-medium text-base">
-        {formatTermLabel(term.term_code)}
-      </h3>
+      <h3 className="font-medium text-base">{formatTermLabel(term.term_code)}</h3>
       {isOpen ? <ChevronDown /> : <ChevronRight />}
     </div>
     {isOpen && (
@@ -200,9 +195,7 @@ const SemesterSection: React.FC<SemesterSectionProps> = ({
           <tbody>
             {term.courses.map((c, i) => (
               <tr key={i} className="border-t">
-                <td className="py-1">
-                  {c.course_code} – {c.course_title}
-                </td>
+                <td className="py-1">{c.course_code} – {c.course_title}</td>
                 <td className="text-center py-1">{c.grade_earned}</td>
                 <td className="text-center py-1">{c.credit_hours}</td>
               </tr>
@@ -210,22 +203,22 @@ const SemesterSection: React.FC<SemesterSectionProps> = ({
           </tbody>
         </table>
         <p className="mt-2 text-xs text-gray-500">
-          Semester GPA: {term.semester_gpa ?? 'N/A'} | Cumulative GPA:{' '}
-          {term.cumulative_gpa ?? 'N/A'}
+          Semester GPA: {term.semester_gpa ?? 'N/A'} | Cumulative GPA: {term.cumulative_gpa ?? 'N/A'}
         </p>
       </div>
     )}
   </div>
 )
 
-/* —————————————————— Main dashboard —————————————————— */
+
+/* —————————————————— Main Dashboard Content —————————————————— */
 const GradesDashboardContent: React.FC = () => {
   const gradesData = useSelector((s: RootState) => s.auth.gradesData)
   const userInfo = useSelector((s: RootState) => s.auth.user)
 
   if (!gradesData) return <p>Loading…</p>
 
-  const nonCurrent = gradesData.terms.filter((t) => t.term_code !== 'CURRENT')
+  const nonCurrent = gradesData.terms.slice(2)
   const latest = nonCurrent[0] || null
   const prev = nonCurrent[1] || null
 
@@ -238,12 +231,9 @@ const GradesDashboardContent: React.FC = () => {
   const cumDelta = cumulativeGPA - cumPrev
 
   const earnedCredits =
-    gradesData.overall?.total_credits_earned ??
-    latest?.credits_earned_to_date ??
-    0
+    gradesData.overall?.total_credits_earned ?? latest?.credits_earned_to_date ?? 0
 
-  const atRisk =
-    latest?.courses.filter((c) => /^F|EI/.test(c.grade_earned)) || []
+  const atRisk = latest?.courses.filter((c) => /^F|EI/.test(c.grade_earned)) || []
 
   const classifyStanding = (g: number) => {
     if (g >= 3.7) return 'First Class'
@@ -262,7 +252,7 @@ const GradesDashboardContent: React.FC = () => {
   /* — Excel export — */
   const exportToExcel = () => {
     const rows: Record<string, any>[] = []
-    gradesData.terms.forEach((t) => {
+    nonCurrent.forEach((t) => {
       const termLabel = formatTermLabel(t.term_code)
       t.courses.forEach((c) => {
         rows.push({
