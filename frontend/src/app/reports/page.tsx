@@ -27,13 +27,14 @@ import {
   ArrowUp,
   ArrowDown,
   Download,
-  Share2
+  Share2,
+  GraduationCap,
+  BookOpen,
+  Landmark
 } from 'lucide-react'
 import { formatTermLabel } from '@/utils/termUtils'
 
-/** Chart with multiple views including all‑time distribution,
- *  all per‑term charts left‑to‑right chronological.
- */
+/* —————————————————— Grade-Trends chart component —————————————————— */
 const GradeTrendsChart: React.FC = () => {
   const [view, setView] = useState<
     | 'semester'
@@ -43,9 +44,9 @@ const GradeTrendsChart: React.FC = () => {
     | 'atRisk'
     | 'distribution'
   >('semester')
+
   const gradesData = useSelector((s: RootState) => s.auth.gradesData)
 
-  // build per‑term metrics
   const terms =
     gradesData?.terms
       .filter((t) => t.term_code !== 'CURRENT')
@@ -58,16 +59,17 @@ const GradeTrendsChart: React.FC = () => {
         atRisk: t.courses.filter((c) => /^F|EI/.test(c.grade_earned)).length
       })) || []
 
-  // reversed for chronological left‑to‑right
+  /* reverse so charts run chronologically L->R with newest on the right */
   const chartTerms = [...terms].reverse()
 
-  // build all‑time grade distribution
-  const allCourses = gradesData?.terms.flatMap((t) => t.courses) || []
-  const distCounts: Record<string, number> = {}
-  allCourses.forEach((c) => {
-    distCounts[c.grade_earned] = (distCounts[c.grade_earned] || 0) + 1
-  })
-  const distribution = Object.entries(distCounts)
+  const distribution = (
+    gradesData?.terms.flatMap((t) => t.courses) || []
+  ).reduce<Record<string, number>>((acc, c) => {
+    acc[c.grade_earned] = (acc[c.grade_earned] || 0) + 1
+    return acc
+  }, {})
+
+  const distData = Object.entries(distribution)
     .map(([grade, count]) => ({ grade, count }))
     .sort((a, b) => b.count - a.count)
 
@@ -76,18 +78,18 @@ const GradeTrendsChart: React.FC = () => {
     { key: 'cumulative', label: 'Cumulative GPA' },
     { key: 'credits', label: 'Credits/Term' },
     { key: 'courses', label: 'Courses/Term' },
-    { key: 'atRisk', label: 'At‑Risk Count' },
-    { key: 'distribution', label: 'All‑Time Distribution' }
+    { key: 'atRisk', label: 'At-Risk Count' },
+    { key: 'distribution', label: 'All-Time Distribution' }
   ] as const
 
   return (
     <div>
-      {/* View selector */}
+      {/* selector */}
       <div className="flex flex-wrap justify-end gap-2 mb-3">
         {options.map((opt) => (
           <button
             key={opt.key}
-            onClick={() => setView(opt.key)}
+            onClick={() => setView(opt.key as any)}
             className={`px-3 py-1 rounded-full text-xs font-medium ${
               view === opt.key
                 ? 'bg-blue-600 text-white'
@@ -99,16 +101,18 @@ const GradeTrendsChart: React.FC = () => {
         ))}
       </div>
 
-      {/* Chart area */}
+      {/* chart */}
       <ResponsiveContainer width="100%" height={300}>
         {view === 'distribution' ? (
-          <BarChart data={distribution} margin={{ top: 10, bottom: 20 }}>
+          <BarChart data={distData} margin={{ top: 10, bottom: 20 }}>
             <XAxis dataKey="grade" tick={{ fontSize: 12 }} />
             <YAxis allowDecimals={false} />
             <Tooltip />
             <Bar dataKey="count" name="Courses" fill="#f97316" />
           </BarChart>
-        ) : view === 'credits' || view === 'courses' || view === 'atRisk' ? (
+        ) : view === 'credits' ||
+          view === 'courses' ||
+          view === 'atRisk' ? (
           <BarChart data={chartTerms} margin={{ top: 10, bottom: 5 }}>
             <XAxis dataKey="term" tick={{ fontSize: 12 }} />
             <YAxis allowDecimals={false} />
@@ -120,7 +124,7 @@ const GradeTrendsChart: React.FC = () => {
                   ? 'Credits'
                   : view === 'courses'
                   ? 'Courses'
-                  : 'At‑Risk'
+                  : 'At-Risk'
               }
               fill={
                 view === 'atRisk'
@@ -151,7 +155,7 @@ const GradeTrendsChart: React.FC = () => {
   )
 }
 
-/** Collapsible transcript section */
+/* —————————————————— Collapsible transcript section —————————————————— */
 type SemesterSectionProps = {
   term: {
     term_code: string
@@ -167,6 +171,7 @@ type SemesterSectionProps = {
   isOpen: boolean
   onToggle: () => void
 }
+
 const SemesterSection: React.FC<SemesterSectionProps> = ({
   term,
   isOpen,
@@ -213,9 +218,11 @@ const SemesterSection: React.FC<SemesterSectionProps> = ({
   </div>
 )
 
-/** Main dashboard content */
+/* —————————————————— Main dashboard —————————————————— */
 const GradesDashboardContent: React.FC = () => {
   const gradesData = useSelector((s: RootState) => s.auth.gradesData)
+  const userInfo = useSelector((s: RootState) => s.auth.user)
+
   if (!gradesData) return <p>Loading…</p>
 
   const nonCurrent = gradesData.terms.filter((t) => t.term_code !== 'CURRENT')
@@ -252,7 +259,7 @@ const GradesDashboardContent: React.FC = () => {
       prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]
     )
 
-  // Excel export handler
+  /* — Excel export — */
   const exportToExcel = () => {
     const rows: Record<string, any>[] = []
     gradesData.terms.forEach((t) => {
@@ -284,12 +291,13 @@ const GradesDashboardContent: React.FC = () => {
     URL.revokeObjectURL(url)
   }
 
+  /* —————————————————— JSX —————————————————— */
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold mb-6">My Grades & Insights</h1>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-5 gap-4 mb-8">
+      {/* ——— summary cards ——— */}
+      <div className="grid grid-cols-5 gap-4 mb-6">
         {/* Current GPA */}
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
@@ -342,8 +350,8 @@ const GradesDashboardContent: React.FC = () => {
           )}
         </div>
 
-        {/* Credits Earned */}
-        <div className="p-4 bg-white border rounded-lg shadow-sm">
+        {/* Credits Earned + button */}
+        <div className="p-4 bg-white border rounded-lg shadow-sm flex flex-col">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
             <span>Credits Earned</span>
             <svg
@@ -358,12 +366,20 @@ const GradesDashboardContent: React.FC = () => {
             </svg>
           </div>
           <div className="text-2xl font-semibold">{earnedCredits}</div>
+          {/* new button */}
+          <Button
+            variant="outline"
+            className="mt-3 text-xs"
+            onClick={() => alert('Graduation audit coming soon!')}
+          >
+            Check Graduation Status
+          </Button>
         </div>
 
-        {/* At-Risk Courses */}
+        {/* At-Risk */}
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
-            <span>At‑Risk Courses</span>
+            <span>At-Risk Courses</span>
             <svg
               className="h-4 w-4 text-red-500"
               fill="none"
@@ -401,14 +417,55 @@ const GradesDashboardContent: React.FC = () => {
         </div>
       </div>
 
-      {/* Main layout */}
+      {/* ——— Major / Minor cards ——— */}
+      <div className="grid grid-cols-2 gap-4 mb-8">
+        {/* Major */}
+        <div className="p-4 bg-white border rounded-lg shadow-sm flex items-start gap-3">
+          <GraduationCap className="h-6 w-6 text-blue-600 mt-1" />
+          <div>
+            <div className="text-xs text-gray-600 mb-1">Major</div>
+            <div className="font-medium">
+              {userInfo?.majors || 'Not declared'}
+            </div>
+            {userInfo?.faculty && (
+              <p className="text-xs text-gray-500">{userInfo.faculty}</p>
+            )}
+            {userInfo?.faculty && (
+              <div className="mt-1 flex items-center text-sm text-gray-600">
+                <Landmark className="h-3.5 w-3.5 mr-1.5" />
+                {userInfo.faculty}
+              </div>
+            )}
+
+          </div>
+        </div>
+
+        {/* Minor */}
+        <div className="p-4 bg-white border rounded-lg shadow-sm flex items-start gap-3">
+          <BookOpen className="h-6 w-6 text-purple-600 mt-1" />
+          <div>
+            <div className="text-xs text-gray-600 mb-1">Minor</div>
+            <div className="font-medium">
+              {userInfo?.minors || 'None'}
+            </div>
+            {userInfo?.faculty && (
+              <p className="text-xs text-gray-500">{userInfo.faculty}</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ——— main 2-column layout ——— */}
       <div className="grid grid-cols-5 gap-6">
-        {/* Left column */}
+        {/* Left side */}
         <div className="col-span-3 space-y-6">
+          {/* Trends */}
           <div className="bg-white border rounded-lg p-4">
             <h2 className="text-lg font-medium mb-4">Grade Trends</h2>
             <GradeTrendsChart />
           </div>
+
+          {/* Current courses */}
           <div className="bg-white border rounded-lg p-4">
             <h2 className="text-lg font-medium mb-4">
               Current Courses & Predictions
@@ -429,7 +486,7 @@ const GradesDashboardContent: React.FC = () => {
                     </span>
                   </div>
                   <span
-                    className={`px-2 py-1 rounded-full text-sm ${
+                    className={`px-2 py-1 rounded-full flex items-center justify-center text-sm ${
                       risk
                         ? 'bg-red-100 text-red-800'
                         : 'bg-green-100 text-green-800'
@@ -445,8 +502,9 @@ const GradesDashboardContent: React.FC = () => {
           </div>
         </div>
 
-        {/* Right column */}
+        {/* Right side */}
         <div className="col-span-2 space-y-6">
+          {/* AI insights */}
           <div className="bg-white border rounded-lg p-4">
             <div className="flex justify-between mb-4">
               <h2 className="text-lg font-medium">AI Insights</h2>
@@ -462,6 +520,7 @@ const GradesDashboardContent: React.FC = () => {
             </div>
           </div>
 
+          {/* Transcript */}
           <div className="bg-white border rounded-lg p-4">
             <h2 className="text-lg font-medium mb-4">Academic Transcript</h2>
             <div className="space-y-4 overflow-y-auto max-h-96 px-1 pb-1">
@@ -475,9 +534,10 @@ const GradesDashboardContent: React.FC = () => {
               ))}
             </div>
             <div className="flex space-x-2 mt-4">
+              {/* colour changed to blue */}
               <Button
                 onClick={exportToExcel}
-                className="flex items-center bg-green-600 hover:bg-green-700"
+                className="flex items-center bg-blue-600 hover:bg-blue-700"
               >
                 <Download className="mr-2" />
                 Export Excel

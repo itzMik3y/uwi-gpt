@@ -238,11 +238,49 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-def extract_user_context(current_user: User) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+import logging
+import json
+from typing import Tuple, Dict, Any, List, Optional
+from datetime import datetime
+import asyncio
+
+# Assuming User, EnrolledCourse, CourseGrade, Term, Course models are imported
+try:
+    from user_db.models import User, EnrolledCourse, CourseGrade, Term, Course
+except ImportError:
+     logging.warning("Could not import User model or related DB models. Type hinting may be affected.")
+     # Define placeholder types if models aren't available
+     User = Any
+     EnrolledCourse = Any
+     CourseGrade = Any
+     Term = Any
+     Course = Any
+
+# Import credit check function
+try:
+    from academic.router import credit_check
+    from user_db.database import get_db, AsyncSession
+except ImportError:
+    logging.warning("Could not import credit_check function. Graduation analysis will be unavailable.")
+    credit_check = None
+    get_db = None
+    AsyncSession = Any
+
+logger = logging.getLogger(__name__)
+
+# Define the custom JSON encoder (add this at the top of the file with other imports)
+class SetEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, set):
+            return list(obj)
+        return super().default(obj)
+
+# Now the updated extract_user_context function
+async def extract_user_context(current_user: User) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Extracts user context by RECONSTRUCTING grades data from DB relationships
     to ensure freshness. Formats one part to mirror /auth/me and another
-    part with flat fields for prompt formatting.
+    part with flat fields for prompt formatting. Includes credit check report.
 
     Accesses course_code, course_title, credit_hours directly from the
     CourseGrade object based on the latest model information.
@@ -268,6 +306,12 @@ def extract_user_context(current_user: User) -> Tuple[Dict[str, Any], Dict[str, 
                 "degree_gpa": None,
                 "total_credits_earned": None
             }
+        },
+        "credit_check": {
+            "status": "not_fetched",
+            "error": None,
+            "analysis": None,
+            "reports": None
         }
     }
 
@@ -280,7 +324,12 @@ def extract_user_context(current_user: User) -> Tuple[Dict[str, Any], Dict[str, 
         "user_courses_summary": "N/A",
         "current_courses": [],
         "grade_history": [],
-        "grades_data_raw": None
+        "grades_data_raw": None,
+        "graduation_status_json": "{}",
+        "graduation_report_text": "No credit check analysis available.",
+        "graduation_summary": "Unknown",
+        "potential_graduation_json": "{}",
+        "potential_summary": "Unknown"
     }
 
     try:
@@ -368,14 +417,10 @@ def extract_user_context(current_user: User) -> Tuple[Dict[str, Any], Dict[str, 
                 term_obj = getattr(grade, 'term', None)
                 term_code = getattr(term_obj, 'term_code', 'UnknownTerm') if term_obj else 'UnknownTerm'
 
-                # --- FIXED SECTION ---
                 # Get code, title, and credits DIRECTLY from the CourseGrade object itself
-                # using the column names defined in the CourseGrade SQLAlchemy model
                 course_code = getattr(grade, 'course_code', "Unknown")
                 course_title = getattr(grade, 'course_title', "Unknown Title")
                 credit_hours = getattr(grade, 'credit_hours', 3.0) # Use 3.0 as default if null/missing
-
-                # --- End FIXED SECTION ---
 
                 # Create course entry for the nested grades_data structure
                 course_entry_auth = {
@@ -433,7 +478,6 @@ def extract_user_context(current_user: User) -> Tuple[Dict[str, Any], Dict[str, 
             else:
                 logger.warning(f"Could not determine overall GPA/Credits from reconstructed terms for user {student_id}.")
 
-
         else: # No grade relationships found for reconstruction
             logger.warning(f"No grade data relationships found for user {student_id}. Grades context will be empty.")
             auth_me_like_context["grades_status"] = {"fetched": False, "success": False, "error": "No grade data available for user in DB relationships."}
@@ -441,17 +485,104 @@ def extract_user_context(current_user: User) -> Tuple[Dict[str, Any], Dict[str, 
             auth_me_like_context["grades_data"]["student_id"] = student_id
             prompt_fields["grades_data_raw"] = auth_me_like_context["grades_data"] # Pass empty structure
 
+        # --- Run Credit Check Analysis if Available ---
+        if credit_check and get_db and grades_available:
+            try:
+                # Create a DB session
+                async_session = None
+                db_iterator = get_db()
+                try:
+                    async_session = await anext(db_iterator) if hasattr(db_iterator, "__anext__") else next(db_iterator)
+                except (StopAsyncIteration, StopIteration):
+                    logger.error("Failed to get database session for credit check")
+                
+                if async_session:
+                    # Run credit check
+                    credit_check_result = await credit_check(current_user, async_session)
+                    
+                    # Add to contexts
+                    auth_me_like_context["credit_check"] = {
+                        "status": "fetched",
+                        "error": None,
+                        "analysis": credit_check_result["analysis"],
+                        "reports": credit_check_result["reports"]
+                    }
+                    
+                    # Format for prompt fields - Using SetEncoder to handle sets
+                    prompt_fields["graduation_status_json"] = json.dumps(
+                        credit_check_result["analysis"], 
+                        ensure_ascii=False,
+                        cls=SetEncoder
+                    )
+                    prompt_fields["graduation_report_text"] = credit_check_result["reports"]
+                    
+                    # Extract key summaries
+                    eligible = credit_check_result["analysis"]["eligible_for_graduation"]
+                    prompt_fields["graduation_summary"] = (
+                        "Eligible for graduation" if eligible 
+                        else "Not eligible for graduation"
+                    )
+                    
+                    # Add potential graduation info
+                    potential_result = credit_check_result["analysis"].get("potential_graduation", {})
+                    if not potential_result:
+                        # Run potential check if not already included in analysis
+                        try:
+                            from academic.credit_check import check_potential_graduation_standardized
+                            potential_result = check_potential_graduation_standardized(
+                                credit_check_result["analysis"], 
+                                student_info=None
+                            )
+                        except ImportError:
+                            logger.warning("Could not import potential graduation check function")
+                            potential_result = {}
+                    
+                    # Using SetEncoder to handle sets in potential graduation data
+                    prompt_fields["potential_graduation_json"] = json.dumps(
+                        potential_result,
+                        ensure_ascii=False,
+                        cls=SetEncoder
+                    )
+                    potential_eligible = potential_result.get("potential_graduate", False)
+                    prompt_fields["potential_summary"] = (
+                        "Potentially eligible for graduation" if potential_eligible
+                        else "Not potentially eligible for graduation"
+                    )
+                else:
+                    logger.error("No database session available for credit check")
+                    auth_me_like_context["credit_check"]["error"] = "Database session unavailable"
+            
+            except Exception as e:
+                logger.error(f"Error during credit check for user {student_id}: {e}", exc_info=True)
+                auth_me_like_context["credit_check"] = {
+                    "status": "error",
+                    "error": str(e),
+                    "analysis": None,
+                    "reports": None
+                }
+        else:
+            reason = "Credit check function unavailable" if not credit_check else "No grade data available"
+            auth_me_like_context["credit_check"]["error"] = reason
+            logger.info(f"Credit check not performed: {reason}")
 
     except Exception as e:
         logger.error(f"Error during user context extraction for user {student_id}: {e}", exc_info=True)
         # Set error status, but try to return basic structure
         auth_me_like_context["grades_status"] = {"fetched": False, "success": False, "error": f"Internal server error during context extraction: {e}"}
+        auth_me_like_context["credit_check"]["error"] = f"Context extraction error: {e}"
         # Ensure basic info is populated even on error
         if not auth_me_like_context["moodle_data"]["user_info"]:
              auth_me_like_context["moodle_data"]["user_info"] = {"name": "Error", "email": "Error", "student_id": "Error"}
         if not auth_me_like_context["grades_data"]["student_name"]:
              auth_me_like_context["grades_data"]["student_name"] = user_name if 'user_name' in locals() else "Error"
              auth_me_like_context["grades_data"]["student_id"] = student_id if 'student_id' in locals() else "Error"
+
+    # Add grade history as JSON for prompt - also using SetEncoder
+    prompt_fields["grade_history_json"] = json.dumps(
+        prompt_fields.get("grade_history", []), 
+        ensure_ascii=False,
+        cls=SetEncoder
+    )
 
     # Return both the /auth/me structured data and the flat fields for prompt formatting
     return auth_me_like_context, prompt_fields
@@ -526,7 +657,7 @@ async def query_endpoint(
 
     if not initial_docs:
         # No docs → early return, include user_context
-        auth_ctx, _ = extract_user_context(current_user)
+        auth_ctx, _ = await extract_user_context(current_user)
         return QueryResponse(
             answer="I could not find any relevant documents based on your query.",
             processing_time=time.perf_counter() - start_time,
@@ -535,7 +666,7 @@ async def query_endpoint(
         )
 
     # 5. Extract & serialize user context
-    auth_me_like_context, prompt_fields = extract_user_context(current_user)
+    auth_me_like_context, prompt_fields = await extract_user_context(current_user)
     prompt_fields["grade_history_json"] = json.dumps(
         prompt_fields.get("grade_history", []), ensure_ascii=False
     )
@@ -707,7 +838,7 @@ async def stream_query_endpoint(
             unique_map.setdefault(get_consistent_doc_id(d), d)
         initial_docs = list(unique_map.values())
         if not initial_docs:
-            auth_ctx, _ = extract_user_context(current_user)
+            auth_ctx, _ = await extract_user_context(current_user)
             payload = {
                 "answer": "",
                 "processing_time": time.perf_counter()-start_time,
@@ -718,7 +849,7 @@ async def stream_query_endpoint(
             return
 
         # extract user context
-        auth_ctx, prompt_fields = extract_user_context(current_user)
+        auth_ctx, prompt_fields = await extract_user_context(current_user)
         prompt_fields["grade_history_json"] = json.dumps(
             prompt_fields.get("grade_history", []), ensure_ascii=False
         )
@@ -785,7 +916,7 @@ async def stream_query_endpoint(
 
         # 10. End event
         total = time.perf_counter() - start_time
-        yield f"event: end\ndata: {json.dumps({'processing_time': total, 'user_context': auth_ctx})}\n\n"
+        yield f"event: end\ndata: {json.dumps({'processing_time': total, 'user_context': auth_ctx}, cls=SetEncoder)}\n\n"
 
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
@@ -827,7 +958,7 @@ async def user_context_endpoint(current_user: User = Depends(get_current_user)):
     """
     try:
         # Call extract_user_context and return only the first part (the /auth/me structure)
-        auth_me_like_context, _ = extract_user_context(current_user)
+        auth_me_like_context, _ = await extract_user_context(current_user)
         return auth_me_like_context
     except Exception as e:
         logger.error(f"Error extracting user context for info endpoint: {e}", exc_info=True)

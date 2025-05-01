@@ -34,6 +34,9 @@ class User(Base):
     enrollments = relationship("EnrolledCourse", back_populates="user")
     grades = relationship("CourseGrade", back_populates="user")
     courses = relationship("Course", secondary="enrolled_courses", viewonly=True)
+    majors = Column(String, nullable=True)  # Comma-separated list of majors
+    minors = Column(String, nullable=True)  # Comma-separated list of minors
+    faculty = Column(String, nullable=True)  # Faculty/College
     tokens = relationship(
         "UserToken", back_populates="user", cascade="all, delete-orphan"
     )

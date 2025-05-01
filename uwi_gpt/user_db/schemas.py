@@ -9,6 +9,9 @@ class UserCreate(BaseModel):
     email: EmailStr
     student_id: str
     password: str
+    majors: Optional[str] = None  # Comma-separated list
+    minors: Optional[str] = None  # Comma-separated list
+    faculty: Optional[str] = None
 
 
 class UserOut(BaseModel):
@@ -17,6 +20,9 @@ class UserOut(BaseModel):
     lastname: str
     email: EmailStr
     student_id: str
+    majors: Optional[str] = None
+    minors: Optional[str] = None
+    faculty: Optional[str] = None
 
     class Config:
         from_attributes = True

@@ -1,7 +1,7 @@
 # uwi-gpt
-docker run -d -p 6333:6333 -p 6334:6334 qdrant/qdrant
+
 run the ingestion script
-python -m uvicorn api:app --host 0.0.0.0 --port 8000
+python -m  main
 # While the venv is active:
 pip uninstall torch torchvision torchaudio -y
 # While the venv is active (replace with your exact required versions/CUDA suffix):
@@ -19,3 +19,27 @@ alembic revision --autogenerate -m "<version message for change in models>"
 
 # to commit the model changes to the PostreSQL on docker:
 alembic upgrade head
+
+to update requirements
+pip freeze > requirements.txt
+
+extensions search screen
+
+
+# deletes everything from the db
+
+-- Disable referential integrity temporarily (PostgreSQL-specific)
+SET session_replication_role = replica;
+
+DELETE FROM bookings;
+DELETE FROM availability_slots;
+DELETE FROM user_tokens;
+DELETE FROM course_grades;
+DELETE FROM enrolled_courses;
+DELETE FROM terms;
+DELETE FROM courses;
+DELETE FROM admins;
+DELETE FROM users;
+
+-- Re-enable referential integrity
+SET session_replication_role = DEFAULT;

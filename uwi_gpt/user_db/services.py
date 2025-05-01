@@ -172,6 +172,9 @@ async def create_user(db: AsyncSession, data: UserCreate):
         email=data.email,
         student_id=data.student_id,
         password_hash=hashed_pw,
+        majors=data.majors,
+        minors=data.minors,
+        faculty=data.faculty,
     )
     db.add(user)
     await db.commit()

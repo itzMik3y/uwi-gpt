@@ -3,28 +3,37 @@
 main.py - Main entry point for the Combined University API
 
 This application combines the Moodle API, the RAG-based QA system,
-and JWT authentication into a single API service.
+the Academic credit‐check endpoints, and JWT authentication into a single API service.
 """
 
 import uvicorn
 import logging
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
 
-# Import routers from the modules
+# -- Routers --
+from auth.router import router as auth_router
 from moodle_api.router import router as moodle_router
 from rag_api.router import router as rag_router
+from academic.router import router as academic_router  # <-- NEW
+from auth.middleware import TokenVerificationMiddleware
+
+# -- RAG initializer --
 from auth.router import router as auth_router  # Import the new auth router
 from auth.middleware import TokenVerificationMiddleware  # Import the JWT middleware
-from contextlib import asynccontextmanager
 
 # Import the startup function from the RAG module
 from rag_api import initialize_rag_resources
-from user_db.database import get_db, engine, AsyncSessionLocal
+
+# from user_db.database import get_db, engine, AsyncSessionLocal
 from user_db.services import seed_superadmin
+
+# -- Database (for lifespan) --
+from user_db.database import AsyncSessionLocal
 
 # Configure logging centrally
 logging.basicConfig(
@@ -35,13 +44,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# --- Startup Event ---
+# --- Application lifespan (startup/shutdown) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic: Code here runs before the application starts receiving requests
     logger.info("API starting up (using lifespan)...")
     try:
-        # Initialize database connection pool
+        # Initialize DB pool
         app.state.db_pool = AsyncSessionLocal
         logger.info("Database connection pool initialized")
 
@@ -57,55 +65,49 @@ async def lifespan(app: FastAPI):
         logger.info("API startup complete. RAG resources initialized.")
 
     except Exception as e:
-        # Log any errors during initialization
-        logger.error(f"Fatal error during initialization: {e}", exc_info=True)
-        # Depending on the severity, you might raise the exception
-        # to prevent the app from starting if initialization fails.
-        # raise # Uncomment to stop app on initialization failure
+        logger.error(f"Initialization error: {e}", exc_info=True)
 
-    yield  # The application runs while yielded
-
-    # Shutdown logic: Code here runs after the application stops receiving requests
+    yield  # app  runs here
     logger.info("API shutting down...")
-    # Clean up resources here
 
 
 # Create the FastAPI app
 app = FastAPI(
     title="Combined University API",
-    description="Provides access to Moodle data, a RAG-based QA system, and JWT authentication.",
+    description="Provides access to Moodle data, RAG-based QA, Academic credit‐check, and JWT auth.",
     version="1.0.0",
-    lifespan=lifespan,  # Add the lifespan handler here
+    lifespan=lifespan,
 )
 
-# Add CORS middleware
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Add your frontend URLs
+    allow_origins=["*"],  # adjust as needed
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-logger.info("CORS middleware added to allow cross-origin requests")
+logger.info("CORS middleware configured")
 
-# Add JWT token verification middleware
+# JWT middleware
 app.add_middleware(TokenVerificationMiddleware)
 logger.info("JWT token verification middleware added")
 
 # --- Include Routers ---
-logger.info("Including API routers...")
-app.include_router(auth_router)  # Add the auth router first
-logger.info("Included Auth router (prefix='/auth')")
-app.include_router(moodle_router)
-logger.info("Included Moodle router (prefix='/moodle')")
-app.include_router(rag_router)
-logger.info("Included RAG router (prefix='/rag')")
+logger.info("Registering routers...")
+app.include_router(auth_router)  # /auth
+logger.info("  - Auth router (/auth)")
+app.include_router(academic_router)  # /academic
+logger.info("  - Academic router (/academic)")
+app.include_router(moodle_router)  # /moodle
+logger.info("  - Moodle router (/moodle)")
+app.include_router(rag_router)  # /rag
+logger.info("  - RAG router (/rag)")
 
 
-# --- Root Endpoint ---
+# --- Health Check ---
 @app.get("/", tags=["General"], summary="API Root/Health Check")
 async def read_root():
-    """Basic API information and health check."""
     return {
         "message": "Welcome to the Combined University API",
         "status": "OK",
@@ -113,9 +115,7 @@ async def read_root():
     }
 
 
-# --- Run Instruction ---
+# --- Run server ---
 if __name__ == "__main__":
     logger.info("Starting Uvicorn server...")
-    # Point uvicorn to this file (main) and the app instance within it
-    # reload=True is great for development, disable for production
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

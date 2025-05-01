@@ -4,6 +4,10 @@ export interface MoodleUser {
   name: string;
   email: string;
   student_id: string;
+  majors?: string | null;
+  minors?: string | null;
+  faculty?: string | null;
+  
 }
 
 export interface MoodleCourse {

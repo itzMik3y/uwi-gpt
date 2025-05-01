@@ -260,12 +260,14 @@ async def read_users_me_structured(
     """
     try:
         # 1. Prepare moodle_data structure
-        user_info = UserInfoOut(
+        user_info =  UserInfoOut(
             name=f"{current_user.firstname} {current_user.lastname}",
             email=current_user.email,
-            student_id=current_user.student_id
+            student_id=current_user.student_id,
+            majors=current_user.majors,
+            minors=current_user.minors,
+            faculty=current_user.faculty
         )
-
         # Extract current courses from enrollments relationship
         # Assumes enrollments linked to "CURRENT" term are the ones to show here
         # Or adjust logic based on how you store/identify current Moodle courses
