@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 
@@ -160,20 +160,20 @@ class UserTokenOut(BaseModel):
         from_attributes = True
 
 
-class SlotCreate(BaseModel):
-    admin_id: int
-    start_time: datetime
-    end_time: datetime
+# class SlotCreate(BaseModel):
+#     admin_id: int
+#     start_time: datetime
+#     end_time: datetime
 
 
-class SlotOut(BaseModel):
-    id: int
-    admin_id: int
-    start_time: datetime
-    end_time: datetime
+# class SlotOut(BaseModel):
+#     id: int
+#     admin_id: int
+#     start_time: datetime
+#     end_time: datetime
 
-    class Config:
-        from_attributes = True
+#     class Config:
+#         from_attributes = True
 
 
 class SlotSummary(BaseModel):
@@ -185,11 +185,21 @@ class SlotBulkCreate(BaseModel):
     admin_id: int
     slots: list[SlotSummary]
 
+    class Config:
+        from_attributes = True
 
-class SlotBulkOut(BaseModel):
+
+class SlotOut(BaseModel):
     id: int
     admin_id: int
-    slots: list[SlotSummary]
+    start_time: datetime
+    end_time: datetime
+    is_booked: bool
 
     class Config:
         from_attributes = True
+
+
+class BookingCreate(BaseModel):
+    student_id: int
+    slot_id: int

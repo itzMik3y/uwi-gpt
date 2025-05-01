@@ -8,10 +8,12 @@ from user_db.schemas import (
     AdminIn,
     AdminOut,
     AdminUpdate,
+    BookingCreate,
     CourseCreate,
     CourseOut,
     EnrollmentCreate,
     EnrollmentOut,
+    SlotBulkCreate,
     SlotOut,
     TermCreate,
     TermOut,
@@ -23,7 +25,7 @@ from user_db.schemas import (
 from user_db.services import (
     book_stu_slot,
     create_admin,
-    create_availability_slot,
+    create_bulk_availability_slots,
     create_course,
     create_term,
     create_user,
@@ -479,32 +481,31 @@ async def get_extra_sas_info_endpoint(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-# scheduling routes
-@router.post("/scheduler/slot", response_model=List[SlotOut])
-def create_slot(
-    admin_id: int,
-    start_time: datetime,
-    end_time: datetime,
+# SCHEDULING ROUTES
+@router.post("/scheduler/slots", response_model=List[SlotOut])
+async def create_slot(
+    data: SlotBulkCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    return create_availability_slot(db, admin_id, start_time, end_time)
+    return await create_bulk_availability_slots(db, data)
 
 
 @router.post("/scheduler/bookings")
-def book_slot(slot_id: int, student_id: int, db: AsyncSession = Depends(get_db)):
-    return book_stu_slot(db, slot_id, student_id)
+async def book_slot(data: BookingCreate, db: AsyncSession = Depends(get_db)):
+    return await book_stu_slot(db, data.slot_id, data.student_id)
 
 
 @router.get("/scheduler/slots/available")
-def available_slots(db: AsyncSession = Depends(get_db)):
-    return get_stu_available_slots(db)
+async def available_slots(db: AsyncSession = Depends(get_db)):
+    return await get_stu_available_slots(db)
 
 
 @router.get("/scheduler/admin/slots")
-def admin_slots(admin_id: int, db: AsyncSession = Depends(get_db)):
-    return get_admin_avail_slots(db, admin_id)
+async def admin_slots(admin_id: int, db: AsyncSession = Depends(get_db)):
+    return await get_admin_avail_slots(db, admin_id)
 
 
+# SUPERADMIN ROUTE
 @router.post("/admin/create_admin")
 async def create_superadmin_for_db(
     adminData: AdminIn,

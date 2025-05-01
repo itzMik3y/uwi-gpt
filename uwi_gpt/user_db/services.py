@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from http.client import HTTPException
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from .models import (
     Admin,
@@ -17,8 +17,6 @@ from .schemas import (
     CourseCreate,
     EnrollmentCreate,
     SlotBulkCreate,
-    SlotBulkOut,
-    SlotCreate,
     TermCreate,
     UserCreate,
     CourseGradeCreate,
@@ -349,28 +347,30 @@ async def get_course_grades_by_term(db: AsyncSession, user_id: int, term_id: int
     return result.scalars().all()
 
 
-# scheduler services
-async def create_availability_slot(
-    db: AsyncSession, admin_id: int, start_time: datetime, end_time: datetime
-):
+##SCHEDULER SERVICES
 
-    result = await db.execute(select(Admin).where(Admin.id == admin_id))
-    admin = result.scalars().first()
 
-    if not admin:
-        raise ValueError("Admin not found")
+# async def create_availability_slot(
+#     db: AsyncSession, admin_id: int, start_time: datetime, end_time: datetime
+# ):
 
-    if start_time >= end_time:
-        raise ValueError("Start time must be before end time")
+#     result = await db.execute(select(Admin).where(Admin.id == admin_id))
+#     admin = result.scalars().first()
 
-    slot = AvailabilitySlot(
-        admin_id=admin_id, start_time=start_time, end_time=end_time, is_booked=False
-    )
+#     if not admin:
+#         raise ValueError("Admin not found")
 
-    db.add(slot)
-    await db.commit()  # ✅ async commit
-    await db.refresh(slot)  # ✅ async refresh
-    return slot
+#     if start_time >= end_time:
+#         raise ValueError("Start time must be before end time")
+
+#     slot = AvailabilitySlot(
+#         admin_id=admin_id, start_time=start_time, end_time=end_time, is_booked=False
+#     )
+
+#     db.add(slot)
+#     await db.commit()  # ✅ async commit
+#     await db.refresh(slot)  # ✅ async refresh
+#     return slot
 
 
 async def create_bulk_availability_slots(db: AsyncSession, data: SlotBulkCreate):
@@ -380,15 +380,47 @@ async def create_bulk_availability_slots(db: AsyncSession, data: SlotBulkCreate)
     if not admin:
         raise HTTPException(status_code=404, detail="Admin not found")
 
-    created_slots = []
+    # 1. Get existing slots from DB
+    existing_slots_result = await db.execute(
+        select(AvailabilitySlot).where(AvailabilitySlot.admin_id == data.admin_id)
+    )
+    existing_slots = existing_slots_result.scalars().all()
 
-    for slot in data.slots:
+    # 2. Check for conflicts within the payload
+    for i, slot in enumerate(data.slots):
         if slot.start_time >= slot.end_time:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid time range: {slot.start_time} >= {slot.end_time}",
             )
 
+        for j, other_slot in enumerate(data.slots):
+            if i != j:
+                # Check internal conflict within payload
+                if not (
+                    slot.end_time <= other_slot.start_time
+                    or slot.start_time >= other_slot.end_time
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Time conflict within submitted slots: {slot.start_time} - {slot.end_time} overlaps with {other_slot.start_time} - {other_slot.end_time}",
+                    )
+
+        # 3. Check for conflicts against existing DB slots
+        for existing in existing_slots:
+            if not (
+                slot.end_time <= existing.start_time
+                or slot.start_time >= existing.end_time
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Slot {slot.start_time} - {slot.end_time} conflicts with existing slot {existing.start_time} - {existing.end_time}",
+                )
+
+    # 4. No conflicts — proceed with creation
+    created_slots: List[AvailabilitySlot] = []
+
+    for slot in data.slots:
         new_slot = AvailabilitySlot(
             admin_id=data.admin_id,
             start_time=slot.start_time,
@@ -448,9 +480,7 @@ async def book_stu_slot(db: AsyncSession, slot_id: str, student_id: str):
         raise ValueError("Student already has a conflicting booking")
 
     # Create booking
-    booking = Booking(
-        slot_id=slot_id, student_id=student_id, created_at=datetime.now(timezone.utc)
-    )
+    booking = Booking(slot_id=slot_id, student_id=student_id)
 
     slot.is_booked = True
 

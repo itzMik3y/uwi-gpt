@@ -11,6 +11,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.sql import func
 import datetime
 import time
 
@@ -176,7 +177,9 @@ class Booking(Base):
         Integer, ForeignKey("availability_slots.id"), nullable=False, index=True
     )
     student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    created_at = Column(DateTime)
+    created_at = Column(
+        DateTime(timezone=True), default=func.now()
+    )  # Automatically gets current UTC time
 
     slot = relationship("AvailabilitySlot", back_populates="booking")
     student = relationship("User", back_populates="bookings")
