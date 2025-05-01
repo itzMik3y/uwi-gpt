@@ -34,6 +34,7 @@ import {
 } from 'lucide-react'
 import { formatTermLabel } from '@/utils/termUtils'
 
+/* —————————————————— Grade Trends Chart —————————————————— */
 const GradeTrendsChart: React.FC = () => {
   const [view, setView] = useState<
     | 'semester'
@@ -45,9 +46,10 @@ const GradeTrendsChart: React.FC = () => {
   >('semester')
 
   const gradesData = useSelector((s: RootState) => s.auth.gradesData)
-  const completedTerms = gradesData?.terms.slice(2) || []
+  // Completed terms start from index 2 onwards
+  const completed = gradesData?.terms.slice(2) || []
 
-  const terms = completedTerms.map((t) => ({
+  const terms = completed.map((t) => ({
     term: formatTermLabel(t.term_code),
     semester: t.semester_gpa ?? 0,
     cumulative: t.cumulative_gpa ?? 0,
@@ -56,9 +58,9 @@ const GradeTrendsChart: React.FC = () => {
     atRisk: t.courses.filter((c) => /^F|EI/.test(c.grade_earned)).length
   }))
 
-  const chartTerms = [...terms].reverse()
+  const chartData = [...terms].reverse()
 
-  const distribution = completedTerms
+  const distribution = completed
     .flatMap((t) => t.courses)
     .reduce<Record<string, number>>((acc, c) => {
       acc[c.grade_earned] = (acc[c.grade_earned] || 0) + 1
@@ -86,16 +88,13 @@ const GradeTrendsChart: React.FC = () => {
             key={opt.key}
             onClick={() => setView(opt.key)}
             className={`px-3 py-1 rounded-full text-xs font-medium ${
-              view === opt.key
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-200 text-gray-700'
+              view === opt.key ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'
             }`}
           >
             {opt.label}
           </button>
         ))}
       </div>
-
       <ResponsiveContainer width="100%" height={300}>
         {view === 'distribution' ? (
           <BarChart data={distData} margin={{ top: 10, bottom: 20 }}>
@@ -105,30 +104,18 @@ const GradeTrendsChart: React.FC = () => {
             <Bar dataKey="count" name="Courses" fill="#f97316" />
           </BarChart>
         ) : view === 'credits' || view === 'courses' || view === 'atRisk' ? (
-          <BarChart data={chartTerms} margin={{ top: 10, bottom: 5 }}>
+          <BarChart data={chartData} margin={{ top: 10, bottom: 5 }}>
             <XAxis dataKey="term" tick={{ fontSize: 12 }} />
             <YAxis allowDecimals={false} />
             <Tooltip />
             <Bar
               dataKey={view}
-              name={
-                view === 'credits'
-                  ? 'Credits'
-                  : view === 'courses'
-                  ? 'Courses'
-                  : 'At-Risk'
-              }
-              fill={
-                view === 'atRisk'
-                  ? '#ef4444'
-                  : view === 'courses'
-                  ? '#10b981'
-                  : '#8b5cf6'
-              }
+              name={view === 'credits' ? 'Credits' : view === 'courses' ? 'Courses' : 'At-Risk'}
+              fill={view === 'atRisk' ? '#ef4444' : view === 'courses' ? '#10b981' : '#8b5cf6'}
             />
           </BarChart>
         ) : (
-          <LineChart data={chartTerms} margin={{ top: 10, bottom: 5 }}>
+          <LineChart data={chartData} margin={{ top: 10, bottom: 5 }}>
             <XAxis dataKey="term" tick={{ fontSize: 12 }} />
             <YAxis domain={[0, view === 'semester' ? 4 : undefined]} />
             <Tooltip />
@@ -147,14 +134,15 @@ const GradeTrendsChart: React.FC = () => {
   )
 }
 
-/* —————————————————— Collapsible transcript section —————————————————— */
-type SemesterSectionProps = {
+/* —————————————————— Semester Section —————————————————— */
+const SemesterSection: React.FC<{
   term: {
     term_code: string
     courses: {
       course_code: string
       course_title: string
       grade_earned: string
+      whatif_grade: string
       credit_hours: number
     }[]
     semester_gpa: number | null
@@ -162,23 +150,9 @@ type SemesterSectionProps = {
   }
   isOpen: boolean
   onToggle: () => void
-}
-
-const SemesterSection: React.FC<{
-  term: {
-    term_code: string
-    courses: { course_code: string; course_title: string; grade_earned: string; credit_hours: number }[]
-    semester_gpa: number | null
-    cumulative_gpa: number | null
-  }
-  isOpen: boolean
-  onToggle: () => void
 }> = ({ term, isOpen, onToggle }) => (
   <div className="border rounded-md overflow-hidden">
-    <div
-      className="flex items-center justify-between p-2 bg-gray-50 cursor-pointer"
-      onClick={onToggle}
-    >
+    <div className="flex items-center justify-between p-2 bg-gray-50 cursor-pointer" onClick={onToggle}>
       <h3 className="font-medium text-base">{formatTermLabel(term.term_code)}</h3>
       {isOpen ? <ChevronDown /> : <ChevronRight />}
     </div>
@@ -193,13 +167,16 @@ const SemesterSection: React.FC<{
             </tr>
           </thead>
           <tbody>
-            {term.courses.map((c, i) => (
-              <tr key={i} className="border-t">
-                <td className="py-1">{c.course_code} – {c.course_title}</td>
-                <td className="text-center py-1">{c.grade_earned}</td>
-                <td className="text-center py-1">{c.credit_hours}</td>
-              </tr>
-            ))}
+            {term.courses.map((c, i) => {
+              const display = c.grade_earned !== 'NA' ? c.grade_earned : c.whatif_grade
+              return (
+                <tr key={i} className="border-t">
+                  <td className="py-1">{c.course_code} – {c.course_title}</td>
+                  <td className="text-center py-1">{display}</td>
+                  <td className="text-center py-1">{c.credit_hours}</td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
         <p className="mt-2 text-xs text-gray-500">
@@ -210,7 +187,6 @@ const SemesterSection: React.FC<{
   </div>
 )
 
-
 /* —————————————————— Main Dashboard Content —————————————————— */
 const GradesDashboardContent: React.FC = () => {
   const gradesData = useSelector((s: RootState) => s.auth.gradesData)
@@ -218,9 +194,14 @@ const GradesDashboardContent: React.FC = () => {
 
   if (!gradesData) return <p>Loading…</p>
 
-  const nonCurrent = gradesData.terms.slice(2)
-  const latest = nonCurrent[0] || null
-  const prev = nonCurrent[1] || null
+  // Current courses come from index 0
+  const currentTerm = gradesData.terms[1]
+  // Completed terms from index 2 onward
+  const transcriptTerms = gradesData.terms.slice(1)
+  const completed = gradesData.terms.slice(2)
+
+  const latest = completed[0] || null
+  const prev = completed[1] || null
 
   const currentGPA = latest?.semester_gpa ?? 0
   const delta = prev ? currentGPA - (prev.semester_gpa ?? 0) : 0
@@ -233,10 +214,10 @@ const GradesDashboardContent: React.FC = () => {
   const earnedCredits =
     gradesData.overall?.total_credits_earned ?? latest?.credits_earned_to_date ?? 0
 
-  const atRisk = latest?.courses.filter((c) => /^F|EI/.test(c.grade_earned)) || []
+  const atRiskCourses = currentTerm?.courses.filter((c) => /^F|EI/.test(c.grade_earned)) || []
 
   const classifyStanding = (g: number) => {
-    if (g >= 3.7) return 'First Class'
+    if (g >= 3.6) return 'First Class'
     if (g >= 3.0) return 'Second Class (Upper)'
     if (g >= 2.0) return 'Second Class (Lower)'
     return 'Pass'
@@ -245,14 +226,12 @@ const GradesDashboardContent: React.FC = () => {
 
   const [openTerms, setOpenTerms] = useState<string[]>([])
   const toggleTerm = (code: string) =>
-    setOpenTerms((prev) =>
-      prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]
-    )
+    setOpenTerms((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]))
 
   /* — Excel export — */
   const exportToExcel = () => {
     const rows: Record<string, any>[] = []
-    nonCurrent.forEach((t) => {
+    completed.forEach((t) => {
       const termLabel = formatTermLabel(t.term_code)
       t.courses.forEach((c) => {
         rows.push({
@@ -281,240 +260,114 @@ const GradesDashboardContent: React.FC = () => {
     URL.revokeObjectURL(url)
   }
 
-  /* —————————————————— JSX —————————————————— */
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold mb-6">My Grades & Insights</h1>
 
-      {/* ——— summary cards ——— */}
+      {/* Summary Cards */}
       <div className="grid grid-cols-5 gap-4 mb-6">
-        {/* Current GPA */}
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
-            <span>Current GPA</span>
-            <TrendingUp className="text-blue-500" />
+            <span>Current GPA</span><TrendingUp className="text-blue-500"/>
           </div>
-          <div className="text-2xl font-semibold">
-            {currentGPA.toFixed(2)}
-          </div>
+          <div className="text-2xl font-semibold">{currentGPA.toFixed(2)}</div>
           {prev && (
-            <div
-              className={`mt-1 flex items-center text-xs font-medium ${
-                delta >= 0 ? 'text-green-600' : 'text-red-600'
-              }`}
-            >
-              {delta >= 0 ? (
-                <ArrowUp className="h-4 w-4 mr-1" />
-              ) : (
-                <ArrowDown className="h-4 w-4 mr-1" />
-              )}
-              {delta >= 0 ? '+' : ''}
-              {delta.toFixed(2)} from last term
+            <div className={`mt-1 flex items-center text-xs font-medium ${delta>=0?'text-green-600':'text-red-600'}`}> 
+              {delta>=0?<ArrowUp className="h-4 w-4 mr-1"/>:<ArrowDown className="h-4 w-4 mr-1"/>}
+              {delta>=0?'+':''}{delta.toFixed(2)} from last term
             </div>
           )}
         </div>
-
-        {/* Cumulative GPA */}
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
-            <span>Cumulative GPA</span>
-            <TrendingUp className="text-blue-500" />
+            <span>Cumulative GPA</span><TrendingUp className="text-blue-500"/>
           </div>
-          <div className="text-2xl font-semibold">
-            {cumulativeGPA.toFixed(2)}
-          </div>
+          <div className="text-2xl font-semibold">{cumulativeGPA.toFixed(2)}</div>
           {prev && (
-            <div
-              className={`mt-1 flex items-center text-xs font-medium ${
-                cumDelta >= 0 ? 'text-green-600' : 'text-red-600'
-              }`}
-            >
-              {cumDelta >= 0 ? (
-                <ArrowUp className="h-4 w-4 mr-1" />
-              ) : (
-                <ArrowDown className="h-4 w-4 mr-1" />
-              )}
-              {cumDelta >= 0 ? '+' : ''}
-              {cumDelta.toFixed(2)} from last term
+            <div className={`mt-1 flex items-center text-xs font-medium ${cumDelta>=0?'text-green-600':'text-red-600'}`}> 
+              {cumDelta>=0?<ArrowUp className="h-4 w-4 mr-1"/>:<ArrowDown className="h-4 w-4 mr-1"/>}
+              {cumDelta>=0?'+':''}{cumDelta.toFixed(2)} from last term
             </div>
           )}
         </div>
-
-        {/* Credits Earned + button */}
         <div className="p-4 bg-white border rounded-lg shadow-sm flex flex-col">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
-            <span>Credits Earned</span>
-            <svg
-              className="h-4 w-4 text-purple-500"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              viewBox="0 0 24 24"
-            >
-              <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
-              <path d="M6 12v5c0 2 2 3 6 3s6-1 6-3v-5" />
-            </svg>
+            <span>Credits Earned</span><Landmark className="h-4 w-4 text-purple-500"/>
           </div>
           <div className="text-2xl font-semibold">{earnedCredits}</div>
-          {/* new button */}
-          <Button
-            variant="outline"
-            className="mt-3 text-xs"
-            onClick={() => alert('Graduation audit coming soon!')}
-          >
-            Check Graduation Status
-          </Button>
+          <Button variant="outline" className="mt-3 text-xs" onClick={()=>alert('Graduation audit coming soon!')}>Check Graduation Status</Button>
         </div>
-
-        {/* At-Risk */}
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
-            <span>At-Risk Courses</span>
-            <svg
-              className="h-4 w-4 text-red-500"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              viewBox="0 0 24 24"
-            >
-              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86" />
-              <line x1="12" y1="9" x2="12" y2="13" />
-              <line x1="12" y1="17" x2="12.01" y2="17" />
-            </svg>
+            <span>At-Risk Courses</span><Landmark className="h-4 w-4 text-red-500"/>
           </div>
-          <div className="text-2xl font-semibold">{atRisk.length}</div>
-          {atRisk.length > 0 && (
-            <div className="mt-1 text-xs text-red-600">Action needed</div>
-          )}
+          <div className="text-2xl font-semibold">{atRiskCourses.length}</div>
+          {atRiskCourses.length>0 && <div className="mt-1 text-xs text-red-600">Action needed</div>}
         </div>
-
-        {/* Class Standing */}
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
-            <span>Class Standing</span>
-            <svg
-              className="h-4 w-4 text-yellow-500"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              viewBox="0 0 24 24"
-            >
-              <path d="M12 2v20" />
-              <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-            </svg>
+            <span>Class Standing</span><Landmark className="h-4 w-4 text-yellow-500"/>
           </div>
           <div className="text-xl font-semibold">{standing}</div>
         </div>
       </div>
 
-      {/* ——— Major / Minor cards ——— */}
+      {/* Major / Minor Cards */}
       <div className="grid grid-cols-2 gap-4 mb-8">
-        {/* Major */}
         <div className="p-4 bg-white border rounded-lg shadow-sm flex items-start gap-3">
           <GraduationCap className="h-6 w-6 text-blue-600 mt-1" />
           <div>
             <div className="text-xs text-gray-600 mb-1">Major</div>
-            <div className="font-medium">
-              {userInfo?.majors || 'Not declared'}
-            </div>
-            {userInfo?.faculty && (
-              <p className="text-xs text-gray-500">{userInfo.faculty}</p>
-            )}
-            {userInfo?.faculty && (
-              <div className="mt-1 flex items-center text-sm text-gray-600">
-                <Landmark className="h-3.5 w-3.5 mr-1.5" />
-                {userInfo.faculty}
-              </div>
-            )}
-
+            <div className="font-medium">{userInfo?.majors || 'Not declared'}</div>
+            {userInfo?.faculty && <p className="text-xs text-gray-500">{userInfo.faculty}</p>}
           </div>
         </div>
-
-        {/* Minor */}
         <div className="p-4 bg-white border rounded-lg shadow-sm flex items-start gap-3">
           <BookOpen className="h-6 w-6 text-purple-600 mt-1" />
           <div>
             <div className="text-xs text-gray-600 mb-1">Minor</div>
-            <div className="font-medium">
-              {userInfo?.minors || 'None'}
-            </div>
-            {userInfo?.faculty && (
-              <p className="text-xs text-gray-500">{userInfo.faculty}</p>
-            )}
+            <div className="font-medium">{userInfo?.minors || 'None'}</div>
+            {userInfo?.faculty && <p className="text-xs text-gray-500">{userInfo.faculty}</p>}
           </div>
         </div>
       </div>
 
-      {/* ——— main 2-column layout ——— */}
+      {/* Main Layout */}
       <div className="grid grid-cols-5 gap-6">
-        {/* Left side */}
         <div className="col-span-3 space-y-6">
-          {/* Trends */}
           <div className="bg-white border rounded-lg p-4">
             <h2 className="text-lg font-medium mb-4">Grade Trends</h2>
             <GradeTrendsChart />
           </div>
-
-          {/* Current courses */}
           <div className="bg-white border rounded-lg p-4">
-            <h2 className="text-lg font-medium mb-4">
-              Current Courses & Predictions
-            </h2>
-            {latest?.courses.map((c, i) => {
+            <h2 className="text-lg font-medium mb-4">Current Courses & Predictions</h2>
+            {currentTerm.courses.map((c, i) => {
               const risk = /^F|EI/.test(c.grade_earned)
               return (
-                <div
-                  key={i}
-                  className={`flex justify-between p-3 border rounded-lg mb-2 ${
-                    risk ? 'bg-red-50 border-red-200' : ''
-                  }`}
-                >
+                <div key={i} className={`flex justify-between p-3 border rounded-lg mb-2 ${risk ? 'bg-red-50 border-red-200' : ''}`}>
                   <div>
                     <h3 className="font-medium">{c.course_title}</h3>
-                    <span className="text-sm text-gray-500">
-                      {c.course_code}
-                    </span>
+                    <span className="text-sm text-gray-500">{c.course_code}</span>
                   </div>
-                  <span
-                    className={`px-2 py-1 rounded-full flex items-center justify-center text-sm ${
-                      risk
-                        ? 'bg-red-100 text-red-800'
-                        : 'bg-green-100 text-green-800'
-                    }`}
-                  >
-                    {risk
-                      ? `At Risk: ${c.grade_earned}`
-                      : `Predicted: ${c.grade_earned}`}
-                  </span>
+                  <span className={`px-2 py-1 rounded-full text-sm ${risk ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>{risk ? `At Risk: ${c.grade_earned}` : `Predicted: ${c.grade_earned}`}</span>
                 </div>
               )
             })}
           </div>
         </div>
-
-        {/* Right side */}
         <div className="col-span-2 space-y-6">
-          {/* AI insights */}
           <div className="bg-white border rounded-lg p-4">
             <div className="flex justify-between mb-4">
               <h2 className="text-lg font-medium">AI Insights</h2>
               <RefreshCw className="cursor-pointer text-gray-400" />
             </div>
-            <div className="p-3 border-l-4 border-yellow-400 mb-4">
-              <Lightbulb className="inline-block mr-2" />
-              Focus area identified: algorithm complexity in COMP3901.
-            </div>
-            <div className="p-3 border-l-4 border-green-400 bg-green-50">
-              <TrendingUp className="inline-block mr-2 text-green-600" />
-              Positive trend: mobile development improving.
-            </div>
+            <div className="p-3 border-l-4 border-yellow-400 mb-4"><Lightbulb className="inline-block mr-2" />Focus area identified: algorithm complexity in COMP3901.</div>
+            <div className="p-3 border-l-4 border-green-400 bg-green-50"><TrendingUp className="inline-block mr-2 text-green-600" />Positive trend: mobile development improving.</div>
           </div>
-
-          {/* Transcript */}
           <div className="bg-white border rounded-lg p-4">
             <h2 className="text-lg font-medium mb-4">Academic Transcript</h2>
             <div className="space-y-4 overflow-y-auto max-h-96 px-1 pb-1">
-              {nonCurrent.map((term) => (
+              {transcriptTerms.map(term => (
                 <SemesterSection
                   key={term.term_code}
                   term={term}
@@ -523,19 +376,10 @@ const GradesDashboardContent: React.FC = () => {
                 />
               ))}
             </div>
+
             <div className="flex space-x-2 mt-4">
-              {/* colour changed to blue */}
-              <Button
-                onClick={exportToExcel}
-                className="flex items-center bg-blue-600 hover:bg-blue-700"
-              >
-                <Download className="mr-2" />
-                Export Excel
-              </Button>
-              <Button variant="outline" className="flex items-center">
-                <Share2 className="mr-2" />
-                Share
-              </Button>
+              <Button onClick={exportToExcel} className="flex items-center bg-blue-600 hover:bg-blue-700"><Download className="mr-2" />Export Excel</Button>
+              <Button variant="outline" className="flex items-center"><Share2 className="mr-2" />Share</Button>
             </div>
           </div>
         </div>
