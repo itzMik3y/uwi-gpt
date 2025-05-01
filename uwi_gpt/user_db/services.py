@@ -490,6 +490,36 @@ async def book_stu_slot(db: AsyncSession, slot_id: str, student_id: str):
     return booking
 
 
+async def unbook_stu_slot(db: AsyncSession, slot_id: int, student_id: int):
+    # Find the booking
+    result = await db.execute(
+        select(Booking).where(
+            Booking.slot_id == slot_id, Booking.student_id == student_id
+        )
+    )
+    booking = result.scalar_one_or_none()
+
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+
+    # Update the slot to mark it as not booked
+    result = await db.execute(
+        select(AvailabilitySlot).where(AvailabilitySlot.id == slot_id)
+    )
+    slot = result.scalar_one_or_none()
+
+    if not slot:
+        raise HTTPException(status_code=404, detail="Slot not found")
+
+    slot.is_booked = False
+
+    # Delete the booking
+    await db.delete(booking)
+    await db.commit()
+
+    return {"message": "Booking successfully cancelled", "slot_id": slot_id}
+
+
 async def get_admin_avail_slots(db: AsyncSession, admin_id: int):
     stmt = select(AvailabilitySlot).where(AvailabilitySlot.admin_id == admin_id)
     result = await db.execute(stmt)

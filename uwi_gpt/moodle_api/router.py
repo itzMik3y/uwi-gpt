@@ -17,6 +17,8 @@ from user_db.schemas import (
     SlotOut,
     TermCreate,
     TermOut,
+    UnbookRequest,
+    UnbookResponse,
     UserCreate,
     UserOut,
     CourseGradeCreate,
@@ -45,6 +47,7 @@ from user_db.services import (
     get_course_grades_by_user,
     get_course_grades_by_term,
     superadmin_required,
+    unbook_stu_slot,
     update_admin,
 )
 from .models import MoodleCredentials, SASCredentials
@@ -502,6 +505,11 @@ async def book_slot(data: BookingCreate, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         logger.error(f"Error booking slot: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/scheduler/bookings", response_model=UnbookResponse)
+async def unbook_slot(data: UnbookRequest, db: AsyncSession = Depends(get_db)):
+    return await unbook_stu_slot(db, data.slot_id, data.student_id)
 
 
 @router.get("/scheduler/slots/available")
