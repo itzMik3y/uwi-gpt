@@ -492,7 +492,16 @@ async def create_slot(
 
 @router.post("/scheduler/bookings")
 async def book_slot(data: BookingCreate, db: AsyncSession = Depends(get_db)):
-    return await book_stu_slot(db, data.slot_id, data.student_id)
+    try:
+
+        return await book_stu_slot(db, data.slot_id, data.student_id)
+    except ValueError as e:
+        # Catch the ValueError and return it as an HTTP exception with the message
+        logger.error(f"Error booking slot: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error booking slot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/scheduler/slots/available")
