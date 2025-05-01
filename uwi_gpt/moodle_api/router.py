@@ -1,25 +1,43 @@
 # moodle_api/router.py
+from datetime import datetime
 import logging
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
 from user_db.schemas import (
+    AdminCreate,
+    AdminIn,
+    AdminOut,
+    AdminUpdate,
+    BookingCreate,
     CourseCreate,
     CourseOut,
     EnrollmentCreate,
     EnrollmentOut,
+    SlotBulkCreate,
+    SlotOut,
     TermCreate,
     TermOut,
+    UnbookRequest,
+    UnbookResponse,
     UserCreate,
     UserOut,
     CourseGradeCreate,
     CourseGradeOut,
 )
 from user_db.services import (
+    book_stu_slot,
+    create_admin,
+    create_bulk_availability_slots,
     create_course,
     create_term,
     create_user,
+    delete_admin,
     enroll_user_in_course,
+    get_admin_avail_slots,
+    get_admin_by_id,
+    get_all_admins,
     get_enrollments_by_user,
+    get_stu_available_slots,
     get_terms_by_user,
     get_user_by_id,
     list_courses,
@@ -28,6 +46,9 @@ from user_db.services import (
     create_or_update_course_grade,
     get_course_grades_by_user,
     get_course_grades_by_term,
+    superadmin_required,
+    unbook_stu_slot,
+    update_admin,
 )
 from .models import MoodleCredentials, SASCredentials
 from .service import fetch_moodle_details, fetch_uwi_sas_details, fetch_extra_sas_info
@@ -461,3 +482,109 @@ async def get_extra_sas_info_endpoint(
     except Exception as e:
         logger.error(f"Error fetching extra SAS info: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# SCHEDULING ROUTES
+@router.post("/scheduler/slots", response_model=List[SlotOut])
+async def create_slot(
+    data: SlotBulkCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    return await create_bulk_availability_slots(db, data)
+
+
+@router.post("/scheduler/bookings")
+async def book_slot(data: BookingCreate, db: AsyncSession = Depends(get_db)):
+    try:
+
+        return await book_stu_slot(db, data.slot_id, data.student_id)
+    except ValueError as e:
+        # Catch the ValueError and return it as an HTTP exception with the message
+        logger.error(f"Error booking slot: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error booking slot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/scheduler/bookings", response_model=UnbookResponse)
+async def unbook_slot(data: UnbookRequest, db: AsyncSession = Depends(get_db)):
+    return await unbook_stu_slot(db, data.slot_id, data.student_id)
+
+
+@router.get("/scheduler/slots/available")
+async def available_slots(db: AsyncSession = Depends(get_db)):
+    return await get_stu_available_slots(db)
+
+
+@router.get("/scheduler/admin/slots")
+async def admin_slots(admin_id: int, db: AsyncSession = Depends(get_db)):
+    return await get_admin_avail_slots(db, admin_id)
+
+
+# SUPERADMIN ROUTE
+@router.post("/admin/create_admin")
+async def create_superadmin_for_db(
+    adminData: AdminIn,
+    db: AsyncSession = Depends(get_db),
+):
+    await superadmin_required(db, adminData.requesting_admin_id)
+    return await create_admin(
+        db,
+        AdminCreate(
+            firstname=adminData.firstname,
+            lastname=adminData.lastname,
+            email=adminData.email,
+            password=adminData.password,
+            is_superadmin=adminData.is_superadmin,
+            login_id=adminData.login_id,
+        ),
+    )
+
+
+# ADMIN CRUD ROUTES
+
+
+# Create an Admin
+@router.post("/admin", response_model=AdminOut)
+async def create_admin_for_db(admin: AdminCreate, db: AsyncSession = Depends(get_db)):
+    try:
+        created_admin = await create_admin(db, admin)
+        return created_admin
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# Get all Admins
+@router.get("/admin", response_model=List[AdminOut])
+async def list_admins(db: AsyncSession = Depends(get_db)):
+    return await get_all_admins(db)
+
+
+# Get one Admin
+@router.get("/admin/{admin_id}", response_model=AdminOut)
+async def get_admin(admin_id: int, db: AsyncSession = Depends(get_db)):
+    admin = await get_admin_by_id(db, admin_id)
+    if not admin:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    return admin
+
+
+# Update an Admin
+@router.put("/admin/{admin_id}", response_model=AdminOut)
+async def update_admin_to_db(
+    admin_id: int, updates: AdminUpdate, db: AsyncSession = Depends(get_db)
+):
+    updated_admin = await update_admin(db, updates, admin_id)
+    if not updated_admin:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    return updated_admin
+
+
+# Delete an Admin
+@router.delete("/admin/{admin_id}")
+async def delete_admin_from_db(admin_id: int, db: AsyncSession = Depends(get_db)):
+    deleted_admin = await delete_admin(db, admin_id)
+    if not deleted_admin:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    return {"message": "Admin deleted successfully"}

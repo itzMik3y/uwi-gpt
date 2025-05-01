@@ -24,3 +24,22 @@ to update requirements
 pip freeze > requirements.txt
 
 extensions search screen
+
+
+# deletes everything from the db
+
+-- Disable referential integrity temporarily (PostgreSQL-specific)
+SET session_replication_role = replica;
+
+DELETE FROM bookings;
+DELETE FROM availability_slots;
+DELETE FROM user_tokens;
+DELETE FROM course_grades;
+DELETE FROM enrolled_courses;
+DELETE FROM terms;
+DELETE FROM courses;
+DELETE FROM admins;
+DELETE FROM users;
+
+-- Re-enable referential integrity
+SET session_replication_role = DEFAULT;
