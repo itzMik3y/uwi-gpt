@@ -1,6 +1,6 @@
 # academic/router.py
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.utils import get_current_user
@@ -27,7 +27,8 @@ from .credit_check import (
     print_potential_graduation_report,
     print_final_status,
 )
-
+from .utils import build_course_query, serialize_course 
+from typing import List, Optional
 router = APIRouter(prefix="/academic", tags=["Academic"])
 
 # 1) Dictionaries for schema lookup
@@ -112,7 +113,9 @@ async def credit_check(
         minor_schema,
         student_info=None
     )
-
+    potential = check_potential_graduation_standardized(result, student_info=None)
+    result["potentially_eligible_for_graduation"]    = potential["potential_graduate"]
+    result["potential_all_requirements_satisfied"]  = potential["potential_all_requirements_satisfied"]
     # 6) Capture all of your formatted reports
     buf = io.StringIO()
     old_stdout = sys.stdout
@@ -146,3 +149,25 @@ async def credit_check(
         "analysis": result,
         "reports": reports_text
     }
+
+@router.get(
+    "/course",
+    response_model=List[dict],
+    summary="Search courses by free‐text query",
+)
+async def search_courses(
+    q: str = Query(..., description="Search term (matches code OR title)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Free‐text search on course_code OR course_title.
+    Returns all matching courses (with prerequisites).
+    """
+    stmt = build_course_query(q)
+    result = await db.execute(stmt)
+    courses = result.scalars().all()
+
+    if not courses:
+        raise HTTPException(404, f"No courses found matching '{q}'")
+
+    return [serialize_course(c) for c in courses]

@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKey,
     DateTime,
     Table,
+    UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.asyncio import AsyncAttrs
@@ -186,3 +187,70 @@ class Booking(Base):
 
     slot = relationship("AvailabilitySlot", back_populates="booking")
     student = relationship("User", back_populates="bookings")
+
+class CatalogCourse(Base):
+    __tablename__ = "catalog_courses"
+
+    # surrogate primary key
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # BAN system course ID (from scraped JSON; e.g., 5777)
+    ban_id = Column(Integer, unique=True, nullable=False, index=True)
+    term_effective = Column(String, nullable=False)   # e.g., "200410"
+    subject_code = Column(String, nullable=False)     # e.g. "BIOC"
+    course_number = Column(String, nullable=False)    # e.g. "3203"
+    # Combined field for easy lookups and unique constraint
+    course_code = Column(String, nullable=False, index=True)
+    college           = Column(String, nullable=True, index=True)
+    department        = Column(String, nullable=True, index=True)
+    college_code     = Column(String)
+    course_title     = Column(String)
+    credit_hour_low  = Column(Integer)
+    credit_hour_high = Column(Integer)
+    # other metadata fields...
+
+    # One-to-many to prereqs
+    prerequisites = relationship(
+        "CatalogPrerequisite",
+        back_populates="course",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        # ensure uniqueness of this combination
+        UniqueConstraint('subject_code', 'course_number', name='uq_subject_course'),
+    )
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # auto-generate course_code if not provided
+        if not getattr(self, 'course_code', None):
+            self.course_code = f"{self.subject_code}{self.course_number}"
+
+class CatalogPrerequisite(Base):
+    __tablename__ = "catalog_prerequisites"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    course_id = Column(Integer, ForeignKey("catalog_courses.id"), nullable=False)
+
+    # "And" / "Or" relationship
+    and_or  = Column(String)
+    # e.g. "MICR - Microbiology"
+    subject = Column(String, nullable=False)
+    number  = Column(String, nullable=False)
+    level   = Column(String)
+    grade   = Column(String)
+
+    course = relationship("CatalogCourse", back_populates="prerequisites")
+    course_code = Column(String, nullable=False, index=True)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # auto‐compute on new instances
+        if not getattr(self, "course_code", None):
+            subj_code = self.subject.split(" - ")[0]
+            self.course_code = f"{subj_code}{self.number}"
+
+    def __repr__(self):
+        return (
+            f"<Prereq {self.and_or or ''} {self.subject}"  
+            f" {self.number} level={self.level} grade={self.grade}>"
+        )

@@ -34,9 +34,9 @@ The query is coming from the following student:
 - Student ID: {student_id}
 - Current Courses Summary: {user_courses_summary}
 - Latest Recorded Cumulative GPA: {user_gpa}
-- Full Grade History (JSON): {grade_history_json}
-- Graduation Analysis (JSON): {graduation_status_json}
-- Potential Graduation (JSON): {potential_graduation_json}
+- Full Grade History: {grade_history_json}
+- Graduation Analysis: {graduation_status_json}
+- Potential Graduation: {potential_graduation_json}
 
 **Grade & Level Interpretation Rules:**
 - Passing grades: A+, A, A-, B+, B, B-, C+, C.

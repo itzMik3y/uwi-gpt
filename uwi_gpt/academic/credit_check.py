@@ -150,7 +150,7 @@ fst_specifics = {
     "departments": [
         {"department": "COMPUTING", "majors": [{"name": "Computer Science", "code": "COMP"}, {"name": "Information Technology", "code": "INFO"}, {"name": "Software Engineering", "code": "SWEN"}]},
         {"department": "PHYSICS", "majors": [{"name": "Electronics", "code": "ELET"}]},
-        {"department": "MATHEMATICS", "majors": [{"name": "Mathematics", "code": "MATH"}]}
+        {"department": "MATHEMATICS", "majors": [{"name": "Mathematics", "code": "MATH"}, {"name": "Statistics", "code": "STAT"}]},
     ],
     "foundation_requirements": {
          "required_slots": [
