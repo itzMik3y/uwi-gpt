@@ -153,7 +153,31 @@ class UserTokenCreate(BaseModel):
     ip_address: Optional[str] = None
 
 
+class AdminTokenCreate(BaseModel):
+    user_id: int
+    # role: str
+    token_type: str
+    token_key: str
+    token_hash: str
+    expires_at: int
+    device_info: Optional[str] = None
+    ip_address: Optional[str] = None
+
+
 class UserTokenOut(BaseModel):
+    id: int
+    user_id: int
+    token_type: str
+    created_at: int
+    expires_at: int
+    is_blacklisted: bool
+    device_info: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class AdminTokenOut(BaseModel):
     id: int
     user_id: int
     token_type: str
