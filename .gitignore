@@ -37,3 +37,9 @@ chroma_db_bilingual/
 .idea/
 node_modules/
 
+#cache
+uwi_gpt/rag_api/docs_state.json
+
+
+#frontend bun
+marketing_website/bun.lock

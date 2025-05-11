@@ -57,6 +57,9 @@ class Admin(Base):
     is_superadmin = Column(Boolean, default=False)  # <-- New field!
 
     slots = relationship("AvailabilitySlot", back_populates="admin")
+    tokens = relationship(
+        "AdminToken", back_populates="admin", cascade="all, delete-orphan"
+    )
 
 
 class Course(Base):
@@ -160,6 +163,29 @@ class UserToken(Base):
 
     # Relationships
     user = relationship("User", back_populates="tokens")
+
+
+class AdminToken(Base):
+    __tablename__ = "admin_tokens"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("admins.id"), nullable=False, index=True)
+    # role = Column(String, nullable=False)  # Role of the admin (e.g., 'admin')
+    token_type = Column(String, nullable=False)  # 'access' or 'refresh'
+    token_key = Column(
+        String, nullable=False, index=True
+    )  # First 8 characters of the token
+    token_hash = Column(String, nullable=False)  # Securely hashed full token
+    expires_at = Column(
+        Integer, nullable=False
+    )  # Unix timestamp (e.g., time.time() + ttl)
+    created_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
+    is_blacklisted = Column(Boolean, nullable=False, default=False)
+    device_info = Column(String, nullable=True)  # Optional user-agent/device info
+    ip_address = Column(String, nullable=True)  # Optional client IP address
+
+    # Relationship to admin
+    admin = relationship("Admin", back_populates="tokens")
 
 
 class AvailabilitySlot(Base):

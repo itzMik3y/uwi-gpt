@@ -43,3 +43,12 @@ DELETE FROM users;
 
 -- Re-enable referential integrity
 SET session_replication_role = DEFAULT;
+
+
+# autofills db from script
+python -m user_db.populate
+
+# to merge different changes to migrations
+alembic heads
+alembic merge -m "merge branches" <revision_1> <revision_2>
+alembic upgrade head

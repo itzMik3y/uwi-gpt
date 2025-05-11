@@ -3,6 +3,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from .models import (
     Admin,
+    AdminToken,
     AvailabilitySlot,
     Booking,
     Course,
@@ -13,6 +14,7 @@ from .models import (
 )
 from .schemas import (
     AdminCreate,
+    AdminTokenCreate,
     AdminUpdate,
     CourseCreate,
     EnrollmentCreate,
@@ -51,6 +53,25 @@ async def create_token_record(
         print(f"DEBUG: Commit successful for JTI {token_data.token_key}")  # DEBUG LOG
     except Exception as e:
         print(f"ERROR: Commit failed in create_token_record: {e}")  # DEBUG LOG
+        raise  # Re-raise the exception
+    await db.refresh(token)
+    return token
+
+
+# Keep create_admin_token_record - it's used by store_token_in_db in auth/utils.py
+async def create_admin_token_record(
+    db: AsyncSession, token_data: AdminTokenCreate
+) -> AdminToken:
+    token = AdminToken(**token_data.dict())
+    db.add(token)
+    print(
+        f"DEBUG: About to commit token record for user {token_data.user_id}, JTI {token_data.token_key}"
+    )  # DEBUG LOG
+    try:
+        await db.commit()
+        print(f"DEBUG: Commit successful for JTI {token_data.token_key}")  # DEBUG LOG
+    except Exception as e:
+        print(f"ERROR: Commit failed in create_admin_token_record: {e}")  # DEBUG LOG
         raise  # Re-raise the exception
     await db.refresh(token)
     return token
@@ -96,10 +117,49 @@ async def verify_token(
     return token_record  # Return the found record (or None)
 
 
+async def verify_admin_token(
+    db: AsyncSession, token_jti: str, token_type: str
+) -> Optional[AdminToken]:  # Signature changed
+    """
+    Verify token exists in DB, is not blacklisted, and not expired, using JTI.
+    Finds the token record based on its JTI stored in the token_key column.
+    """
+
+    # Directly query using JTI (assuming JTI is stored in token_key column)
+    current_time = int(time.time())
+    stmt = select(AdminToken).where(
+        AdminToken.token_key == token_jti,  # Query by JTI stored in token_key
+        AdminToken.token_type == token_type,
+        AdminToken.is_blacklisted == False,
+        AdminToken.expires_at > current_time,
+    )
+    result = await db.execute(stmt)
+    token_record = result.scalar_one_or_none()  # Expect 0 or 1 result
+
+    print(
+        f"DEBUG: Verifying admin token with JTI: {token_jti}, found: {token_record is not None}"
+    )
+
+    return token_record  # Return the found record (or None)
+
+
 # Keep blacklist_token as is
 async def blacklist_token(db: AsyncSession, token_id: int) -> bool:
     """Blacklist a token to prevent its use"""
     result = await db.execute(select(UserToken).where(UserToken.id == token_id))
+    token = result.scalar_one_or_none()
+
+    if not token:
+        return False
+
+    token.is_blacklisted = True
+    await db.commit()
+    return True
+
+
+async def blacklist_admin_token(db: AsyncSession, token_id: int) -> bool:
+    """Blacklist a token to prevent its use"""
+    result = await db.execute(select(AdminToken).where(AdminToken.id == token_id))
     token = result.scalar_one_or_none()
 
     if not token:
@@ -124,10 +184,38 @@ async def get_user_active_tokens(db: AsyncSession, user_id: int) -> List[UserTok
     return result.scalars().all()
 
 
+async def get_admin_active_tokens(db: AsyncSession, user_id: int) -> List[AdminToken]:
+    """Get all active (non-blacklisted, non-expired) tokens for an admin"""
+    current_time = int(time.time())
+    result = await db.execute(
+        select(AdminToken).where(
+            AdminToken.user_id == user_id,
+            AdminToken.is_blacklisted == False,
+            AdminToken.expires_at > current_time,
+        )
+    )
+    return result.scalars().all()
+
+
 # Keep blacklist_all_user_tokens as is
 async def blacklist_all_user_tokens(db: AsyncSession, user_id: int) -> int:
     """Blacklist all tokens for a user, returns count of blacklisted tokens"""
     tokens = await get_user_active_tokens(db, user_id)
+    count = 0
+
+    for token in tokens:
+        token.is_blacklisted = True
+        count += 1
+
+    if count > 0:
+        await db.commit()
+
+    return count
+
+
+async def blacklist_all_admin_tokens(db: AsyncSession, user_id: int) -> int:
+    """Blacklist all tokens for an admin, returns count of blacklisted tokens"""
+    tokens = await get_admin_active_tokens(db, user_id)
     count = 0
 
     for token in tokens:
@@ -184,6 +272,11 @@ async def create_user(db: AsyncSession, data: UserCreate):
 
 async def get_user_by_id(db: AsyncSession, user_id: int):
     result = await db.execute(select(User).where(User.id == user_id))
+    return result.scalar_one_or_none()
+
+
+async def get_admin_by_id(db: AsyncSession, admin_id: int):
+    result = await db.execute(select(Admin).where(Admin.id == admin_id))
     return result.scalar_one_or_none()
 
 
@@ -566,7 +659,7 @@ async def seed_superadmin(db: AsyncSession):
             firstname="Default",
             lastname="SuperAdmin",
             email="superadmin@uwi.edu",
-            password="superadmin123",
+            password=hash_password("superadmin123"),
             is_superadmin=True,
             login_id=999123456,
         ),
