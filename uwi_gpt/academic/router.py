@@ -52,6 +52,7 @@ MINOR_SCHEMAS = {
     # add more minors here...
 }
 
+
 class CourseInputModel(BaseModel):
     course_code: str
     course_title: str
@@ -59,19 +60,34 @@ class CourseInputModel(BaseModel):
     grade_earned: str
     whatif_grade: Optional[str] = "NA"
 
+
 class TermInputModel(BaseModel):
-    term_code: str # e.g., "202320"
+    term_code: str  # e.g., "202320"
     courses: List[CourseInputModel]
     semester_gpa: float
     cumulative_gpa: float
-    degree_gpa: Optional[float] = None # Can be null for some terms
+    degree_gpa: Optional[float] = None  # Can be null for some terms
     credits_earned_to_date: float
 
+
 class UserTranscriptInput(BaseModel):
-    terms: List[TermInputModel] = Field(..., description="List of academic terms with course details.")
+    terms: List[TermInputModel] = Field(
+        ..., description="List of academic terms with course details."
+    )
     # student_info can be used for FSS language exemptions, etc.
     # Example: {'is_native_english': True, 'has_language_qualification': False, 'is_international': False}
-    student_info: Optional[Dict[str, Any]] = Field(None, description="Optional student information for exemption processing.", examples=[{"is_native_english": True, "has_language_qualification": False, "is_international": True}])
+    student_info: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional student information for exemption processing.",
+        examples=[
+            {
+                "is_native_english": True,
+                "has_language_qualification": False,
+                "is_international": True,
+            }
+        ],
+    )
+
 
 @router.get("/credit-check")
 async def credit_check(
@@ -200,30 +216,41 @@ async def search_courses(
 
     return [serialize_course(c) for c in courses]
 
-@router.post("/credit-check-transcript", summary="Perform credit check using a user-provided transcript")
+
+@router.post(
+    "/credit-check-transcript",
+    summary="Perform credit check using a user-provided transcript",
+)
 async def credit_check_with_transcript(
     transcript_input: UserTranscriptInput,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db), # db dependency for get_current_user
+    current_user: User | Admin = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),  # db dependency for get_current_user
 ):
     # 1) Pick faculty schema based on current_user
     faculty_key = current_user.faculty
     faculty_schema_definition = FACULTY_SCHEMAS.get(faculty_key)
     if not faculty_schema_definition:
-        raise HTTPException(status_code=400, detail=f"Unknown faculty for user: {faculty_key}")
-    
+        raise HTTPException(
+            status_code=400, detail=f"Unknown faculty for user: {faculty_key}"
+        )
+
     # Deepcopy to prevent modification of global schema if student_major_code is added
     faculty_schema = faculty_schema_definition.copy()
 
-
     # 2) Pick major schema based on current_user
     declared_majors = (current_user.majors or "").split(",")
-    if not declared_majors or not declared_majors[0] or declared_majors[0] not in MAJOR_SCHEMAS:
-        raise HTTPException(status_code=400, detail=f"Unsupported or missing major for user: {declared_majors}")
+    if (
+        not declared_majors
+        or not declared_majors[0]
+        or declared_majors[0] not in MAJOR_SCHEMAS
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported or missing major for user: {declared_majors}",
+        )
     major_name_from_user = declared_majors[0]
     major_schema_definition, student_major_code = MAJOR_SCHEMAS[major_name_from_user]
     major_schema = major_schema_definition.copy()
-
 
     # 3) Pick minor schema if any, based on current_user
     minor_schema_definition = None
@@ -235,11 +262,11 @@ async def credit_check_with_transcript(
 
     # 4) Construct transcript dict from user input
     transcript_for_analysis = {"data": {"terms": [], "overall": {}}}
-    
+
     processed_terms = []
     for term_model in transcript_input.terms:
         # Convert Pydantic model to dict. `model_dump()` is the V2 equivalent of `dict()`.
-        term_dict = term_model.model_dump() 
+        term_dict = term_model.model_dump()
         processed_terms.append(term_dict)
 
     # Sort terms reverse-chronologically by term_code
@@ -254,7 +281,7 @@ async def credit_check_with_transcript(
             "degree_gpa": recent_term.get("degree_gpa"),
             "total_credits_earned": recent_term.get("credits_earned_to_date"),
         }
-    else: # Handle empty terms list from input
+    else:  # Handle empty terms list from input
         transcript_for_analysis["data"]["overall"] = {
             "cumulative_gpa": 0.0,
             "degree_gpa": None,
@@ -268,7 +295,6 @@ async def credit_check_with_transcript(
     # if student_info_for_check is None:
     #     student_info_for_check = {'is_native_english': True, ... }
 
-
     # 5) Run the analysis
     # Ensure schemas are deepcopied if they are modified by the checking functions
     # (e.g., if student_major_code is added to faculty_schema inside check_faculty_requirements)
@@ -277,19 +303,23 @@ async def credit_check_with_transcript(
 
     result = check_all_requirements(
         transcript_for_analysis,
-        faculty_schema, # Pass the (potentially shallow) copied schema
-        major_schema,   # Pass the (potentially shallow) copied schema
+        faculty_schema,  # Pass the (potentially shallow) copied schema
+        major_schema,  # Pass the (potentially shallow) copied schema
         student_major_code,
-        minor_schema,   # Pass the (potentially shallow) copied schema
-        student_info=student_info_for_check 
+        minor_schema,  # Pass the (potentially shallow) copied schema
+        student_info=student_info_for_check,
     )
-    
+
     # The check_potential_graduation_standardized function expects the result from check_all_requirements,
     # which includes the schemas.
-    potential = check_potential_graduation_standardized(result, student_info=student_info_for_check)
+    potential = check_potential_graduation_standardized(
+        result, student_info=student_info_for_check
+    )
     result["potentially_eligible_for_graduation"] = potential["potential_graduate"]
-    result["potential_all_requirements_satisfied"] = potential["potential_all_requirements_satisfied"]
-    
+    result["potential_all_requirements_satisfied"] = potential[
+        "potential_all_requirements_satisfied"
+    ]
+
     # 6) Capture all of your formatted reports
     buf = io.StringIO()
     old_stdout = sys.stdout
@@ -299,11 +329,13 @@ async def credit_check_with_transcript(
         faculty_schema.get("faculty_name", faculty_key),
         major_schema.get("major", major_name_from_user),
         student_major_code,
-        minor_schema.get("minor") if minor_schema else None
+        minor_schema.get("minor") if minor_schema else None,
     )
-    
+
     # The faculty_schema within 'result' (result['faculty_schema']) would have student_major_code if added by check_all_reqs
-    print_credit_summary(result["faculty_result"]["credits_earned"], result["faculty_schema"])
+    print_credit_summary(
+        result["faculty_result"]["credits_earned"], result["faculty_schema"]
+    )
     print_foundation_report(result["faculty_result"]["foundation_status"])
     if result["faculty_result"].get("language_status"):
         print_language_requirement_report(result["faculty_result"]["language_status"])
@@ -311,13 +343,12 @@ async def credit_check_with_transcript(
     if result.get("minor_result"):
         print_minor_requirements_report(result["minor_result"])
 
-    print_potential_graduation_report(potential) # Use the 'potential' dictionary from its calculation
+    print_potential_graduation_report(
+        potential
+    )  # Use the 'potential' dictionary from its calculation
     print_final_status(result)
 
     sys.stdout = old_stdout
     reports_text = buf.getvalue()
 
-    return {
-        "analysis": result,
-        "reports": reports_text
-    }
+    return {"analysis": result, "reports": reports_text}

@@ -42,4 +42,6 @@ uwi_gpt/rag_api/docs_state.json
 
 
 #frontend bun
-marketing_website/bun.lock
+bun.lock
+bun.lockb
+
