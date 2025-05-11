@@ -20,7 +20,6 @@ from auth.router import router as auth_router
 from moodle_api.router import router as moodle_router
 from rag_api.router import router as rag_router
 from academic.router import router as academic_router  # <-- NEW
-from auth.middleware import TokenVerificationMiddleware
 
 # -- RAG initializer --
 from auth.router import router as auth_router  # Import the new auth router

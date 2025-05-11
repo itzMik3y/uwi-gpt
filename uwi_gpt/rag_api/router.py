@@ -9,38 +9,54 @@ import time
 import json
 import asyncio
 import re
-from typing import Optional, List, Dict, Any, Tuple # Added Tuple
+from typing import Optional, List, Dict, Any, Tuple  # Added Tuple
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Depends, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from user_db.models import Admin
 
 # --- Authentication Imports ---
 # Import the dependency function to get the current user
 try:
-    from auth.utils import get_current_user
+    from auth.utils import get_current_account
 except ImportError:
     # Fallback if auth module structure is different
     try:
-        from ..auth.utils import get_current_user
+        from ..auth.utils import get_current_account
     except ImportError:
-        logging.error("Could not import get_current_user dependency. Auth will not work.")
+        logging.error(
+            "Could not import get_current_current dependency. Auth will not work."
+        )
+
         # Define a placeholder dependency that raises an error if auth is required but missing
-        async def get_current_user():
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Authentication module not configured correctly.")
+        async def get_current_account():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication module not configured correctly.",
+            )
+
 
 # Import the User model and related models for type hinting and context extraction
 try:
-    from user_db.models import User, EnrolledCourse, CourseGrade, Term, Course # Ensure these are correct
+    from user_db.models import (
+        User,
+        EnrolledCourse,
+        CourseGrade,
+        Term,
+        Course,
+    )  # Ensure these are correct
 except ImportError:
-     logging.warning("Could not import User model or related DB models. Type hinting may be affected.")
-     # Define placeholder types if models aren't available
-     User = Any
-     EnrolledCourse = Any
-     CourseGrade = Any
-     Term = Any
-     Course = Any
+    logging.warning(
+        "Could not import User model or related DB models. Type hinting may be affected."
+    )
+    # Define placeholder types if models aren't available
+    User = Any
+    EnrolledCourse = Any
+    CourseGrade = Any
+    Term = Any
+    Course = Any
 
 
 # --- RAG Component Imports ---
@@ -53,23 +69,37 @@ try:
         get_llm,
         rerank_with_crossencoder,
         switch_llm_backend,
-        get_model_info
+        get_model_info,
     )
-    from .prompts import get_prompts_dict # Load prompts function
-    from .retrievers import get_doc_id as get_consistent_doc_id # Consistent ID helper
+    from .prompts import get_prompts_dict  # Load prompts function
+    from .retrievers import get_doc_id as get_consistent_doc_id  # Consistent ID helper
 except ImportError as e:
-    logging.error(f"Error importing RAG components or prompts: {e}. Check module paths.", exc_info=True)
+    logging.error(
+        f"Error importing RAG components or prompts: {e}. Check module paths.",
+        exc_info=True,
+    )
     # Define placeholders or raise error if critical components missing
     get_ensemble_retriever = lambda: None
     get_llm = lambda: None
-    rerank_with_crossencoder = lambda query, docs: docs # Passthrough
-    get_prompts_dict = lambda: {"default_prompt": "Context: {context}\nQuestion: {question}\nAnswer:"} # Basic fallback
-    get_consistent_doc_id = lambda doc: getattr(doc, 'id', id(doc))
+    rerank_with_crossencoder = lambda query, docs: docs  # Passthrough
+    get_prompts_dict = lambda: {
+        "default_prompt": "Context: {context}\nQuestion: {question}\nAnswer:"
+    }  # Basic fallback
+    get_consistent_doc_id = lambda doc: getattr(doc, "id", id(doc))
+
     # Define placeholder models if needed, or let it fail on endpoint definition
-    class QueryRequest(BaseModel): query: str
+    class QueryRequest(BaseModel):
+        query: str
+
     # Ensure QueryResponse expects the Dict for user_context
-    class QueryResponse(BaseModel): answer: str; processing_time: float; context: str; user_context: Dict[str, Any]
-    class SwitchLLMRequest(BaseModel): backend: str
+    class QueryResponse(BaseModel):
+        answer: str
+        processing_time: float
+        context: str
+        user_context: Dict[str, Any]
+
+    class SwitchLLMRequest(BaseModel):
+        backend: str
 
 
 # --- Router Setup ---
@@ -86,64 +116,97 @@ logger = logging.getLogger(__name__)
 
 # --- Helper Functions ---
 
+
 def format_documents_for_llm(docs: List[Any]) -> str:
     """Formats documents, extracting source and key metadata."""
-    if not docs: return "No relevant documents found."
+    if not docs:
+        return "No relevant documents found."
     formatted_docs = []
     for i, doc in enumerate(docs):
         try:
-            metadata = getattr(doc, 'metadata', {})
+            metadata = getattr(doc, "metadata", {})
             # Try standard metadata keys, fallback to generic naming
-            source_filename = metadata.get("source", metadata.get("source_file", f"Unknown_Source_{i+1}"))
+            source_filename = metadata.get(
+                "source", metadata.get("source_file", f"Unknown_Source_{i+1}")
+            )
             doc_header = f"\n--- SOURCE [{source_filename}] ---\n"
             # Define keys you expect/want to show from metadata
             metadata_keys_to_show = [
-                "title", "heading", "department", "faculty", "doc_type",
-                "course_codes", "credits", "level", "semester",
-                "requirement_type", "policy_area", "chunk_index", "chunk_count",
+                "title",
+                "heading",
+                "department",
+                "faculty",
+                "doc_type",
+                "course_codes",
+                "credits",
+                "level",
+                "semester",
+                "requirement_type",
+                "policy_area",
+                "chunk_index",
+                "chunk_count",
                 # Add any other relevant metadata keys here
             ]
             for key in metadata_keys_to_show:
                 if key in metadata:
                     value = metadata[key]
                     # Format list values nicely
-                    value_str = ", ".join(map(str, value)) if isinstance(value, list) else str(value)
+                    value_str = (
+                        ", ".join(map(str, value))
+                        if isinstance(value, list)
+                        else str(value)
+                    )
                     # Only add if value has content and isn't just placeholder/empty
-                    if value_str and value_str.strip() and value_str.lower() not in ["n/a", "none", ""]:
-                         doc_header += f"{key.upper().replace('_', ' ')}: {value_str}\n"
+                    if (
+                        value_str
+                        and value_str.strip()
+                        and value_str.lower() not in ["n/a", "none", ""]
+                    ):
+                        doc_header += f"{key.upper().replace('_', ' ')}: {value_str}\n"
 
             doc_header += "CONTENT:\n"
             # Get page content, default to empty string if missing
-            page_content = str(getattr(doc, 'page_content', ''))
+            page_content = str(getattr(doc, "page_content", ""))
             formatted_docs.append(f"{doc_header}{page_content.strip()}\n")
         except Exception as e:
-            source_display = metadata.get('source_file', f"Unknown_Source_{i+1}") # Fallback source display
-            logger.error(f"Error formatting doc from {source_display} (idx {i}): {e}", exc_info=True)
-            formatted_docs.append(f"\n--- SOURCE [{source_display}] --- (Error formatting document) ---\n")
+            source_display = metadata.get(
+                "source_file", f"Unknown_Source_{i+1}"
+            )  # Fallback source display
+            logger.error(
+                f"Error formatting doc from {source_display} (idx {i}): {e}",
+                exc_info=True,
+            )
+            formatted_docs.append(
+                f"\n--- SOURCE [{source_display}] --- (Error formatting document) ---\n"
+            )
     return "".join(formatted_docs)
+
 
 def classify_and_enrich_documents(docs: List[Any], query: str) -> List[Any]:
     """Classifies documents based on content and adds metadata."""
-    if not docs: return []
+    if not docs:
+        return []
 
     # Simple keyword/regex based classification - adapt as needed
     query_keywords = set(query.lower().split())
-    course_code_pattern = re.compile(r'\b([A-Z]{4}\d{4})\b') # Example: ABCD1234
-    prereq_pattern = r'\b(?:pre[- ]?requisites?|requirements?|mandatory|must have)\b'
-    policy_pattern = r'\b(?:policy|policies|regulation|rules|guidelines?)\b'
-    description_pattern = r'\b(?:description|aims?|objectives?|outline|syllabus)\b'
+    course_code_pattern = re.compile(r"\b([A-Z]{4}\d{4})\b")  # Example: ABCD1234
+    prereq_pattern = r"\b(?:pre[- ]?requisites?|requirements?|mandatory|must have)\b"
+    policy_pattern = r"\b(?:policy|policies|regulation|rules|guidelines?)\b"
+    description_pattern = r"\b(?:description|aims?|objectives?|outline|syllabus)\b"
 
     for doc in docs:
         # Ensure metadata exists and is a dict
-        if not hasattr(doc, 'metadata') or not isinstance(doc.metadata, dict):
+        if not hasattr(doc, "metadata") or not isinstance(doc.metadata, dict):
             doc.metadata = {}
 
-        content = str(getattr(doc, 'page_content', ''))
+        content = str(getattr(doc, "page_content", ""))
         content_lower = content.lower()
 
         # Determine document type
-        doc_type = "general" # Default type
-        course_codes_found = course_code_pattern.findall(content) # Find all course codes
+        doc_type = "general"  # Default type
+        course_codes_found = course_code_pattern.findall(
+            content
+        )  # Find all course codes
 
         # Classification logic (priority matters)
         if re.search(policy_pattern, content_lower):
@@ -166,40 +229,54 @@ def classify_and_enrich_documents(docs: List[Any], query: str) -> List[Any]:
 
     return docs
 
+
 def get_chosen_prompt(query: str, docs: List[Any], prompts: Dict[str, Any]):
     """Selects an appropriate prompt template based on query/document analysis."""
     if not prompts:
         logger.error("Prompts dictionary is empty!")
-        return None # Or raise an error
+        return None  # Or raise an error
 
     default_prompt = prompts.get("default_prompt")
     if not default_prompt:
-         logger.error("Default prompt is missing from prompts dictionary!")
-         # Try to grab *any* prompt as a last resort
-         return next(iter(prompts.values()), None) if prompts else None
+        logger.error("Default prompt is missing from prompts dictionary!")
+        # Try to grab *any* prompt as a last resort
+        return next(iter(prompts.values()), None) if prompts else None
 
     query_lower = query.lower()
-    doc_types = [doc.metadata.get("doc_type", "general") for doc in docs] if docs else []
+    doc_types = (
+        [doc.metadata.get("doc_type", "general") for doc in docs] if docs else []
+    )
 
     # --- Prompt Selection Logic (Customize extensively based on your prompts) ---
 
     # Example: Prioritize requirement/credit related prompts
-    prereq_pattern = r'\b(?:pre[- ]?requisites?|requirements?)\b'
+    prereq_pattern = r"\b(?:pre[- ]?requisites?|requirements?)\b"
     is_prereq_query = bool(re.search(prereq_pattern, query_lower))
-    if any(k in query_lower for k in ["credit", "graduate", "requirement", "gpa"]) \
-       or "requirement" in doc_types \
-       or is_prereq_query:
+    if (
+        any(k in query_lower for k in ["credit", "graduate", "requirement", "gpa"])
+        or "requirement" in doc_types
+        or is_prereq_query
+    ):
         chosen = prompts.get("credit_prompt", default_prompt)
-        logger.debug(f"Choosing prompt: {'credit_prompt' if chosen != default_prompt else 'default_prompt (fallback)'}")
+        logger.debug(
+            f"Choosing prompt: {'credit_prompt' if chosen != default_prompt else 'default_prompt (fallback)'}"
+        )
         return chosen
 
     # Example: Course related prompts
-    has_course_code = bool(re.search(r'\b[A-Z]{4}\d{4}\b', query, re.IGNORECASE))
-    if has_course_code \
-       or any(k in query_lower for k in ["course", "class", "subject", "module", "offering"]) \
-       or any(dt in doc_types for dt in ["course_description", "course_listing"]):
+    has_course_code = bool(re.search(r"\b[A-Z]{4}\d{4}\b", query, re.IGNORECASE))
+    if (
+        has_course_code
+        or any(
+            k in query_lower
+            for k in ["course", "class", "subject", "module", "offering"]
+        )
+        or any(dt in doc_types for dt in ["course_description", "course_listing"])
+    ):
         chosen = prompts.get("course_prompt", default_prompt)
-        logger.debug(f"Choosing prompt: {'course_prompt' if chosen != default_prompt else 'default_prompt (fallback)'}")
+        logger.debug(
+            f"Choosing prompt: {'course_prompt' if chosen != default_prompt else 'default_prompt (fallback)'}"
+        )
         return chosen
 
     # Add more specific prompt selection rules here based on keywords or doc_types
@@ -207,6 +284,7 @@ def get_chosen_prompt(query: str, docs: List[Any], prompts: Dict[str, Any]):
     # Fallback to default
     logger.debug("Choosing prompt: default_prompt")
     return default_prompt
+
 
 def expand_query(query: str) -> List[str]:
     """Basic query expansion (stub). Implement more sophisticated expansion if needed."""
@@ -221,20 +299,30 @@ def expand_query(query: str) -> List[str]:
 
 import logging
 from typing import Tuple, Dict, Any, List, Optional
-from datetime import datetime # Keep if used for anything else, not strictly needed in this function now
+from datetime import (
+    datetime,
+)  # Keep if used for anything else, not strictly needed in this function now
 
 # Assuming User, EnrolledCourse, CourseGrade, Term, Course models are imported
 # and have the necessary attributes and relationships defined (e.g., grade.term, grade.course)
 try:
-    from user_db.models import User, EnrolledCourse, CourseGrade, Term, Course # Ensure these are correct
+    from user_db.models import (
+        User,
+        EnrolledCourse,
+        CourseGrade,
+        Term,
+        Course,
+    )  # Ensure these are correct
 except ImportError:
-     logging.warning("Could not import User model or related DB models. Type hinting may be affected.")
-     # Define placeholder types if models aren't available
-     User = Any
-     EnrolledCourse = Any
-     CourseGrade = Any
-     Term = Any
-     Course = Any
+    logging.warning(
+        "Could not import User model or related DB models. Type hinting may be affected."
+    )
+    # Define placeholder types if models aren't available
+    User = Any
+    EnrolledCourse = Any
+    CourseGrade = Any
+    Term = Any
+    Course = Any
 
 logger = logging.getLogger(__name__)
 
@@ -248,25 +336,30 @@ import asyncio
 try:
     from user_db.models import User, EnrolledCourse, CourseGrade, Term, Course
 except ImportError:
-     logging.warning("Could not import User model or related DB models. Type hinting may be affected.")
-     # Define placeholder types if models aren't available
-     User = Any
-     EnrolledCourse = Any
-     CourseGrade = Any
-     Term = Any
-     Course = Any
+    logging.warning(
+        "Could not import User model or related DB models. Type hinting may be affected."
+    )
+    # Define placeholder types if models aren't available
+    User = Any
+    EnrolledCourse = Any
+    CourseGrade = Any
+    Term = Any
+    Course = Any
 
 # Import credit check function
 try:
     from academic.router import credit_check
     from user_db.database import get_db, AsyncSession
 except ImportError:
-    logging.warning("Could not import credit_check function. Graduation analysis will be unavailable.")
+    logging.warning(
+        "Could not import credit_check function. Graduation analysis will be unavailable."
+    )
     credit_check = None
     get_db = None
     AsyncSession = Any
 
 logger = logging.getLogger(__name__)
+
 
 # Define the custom JSON encoder (add this at the top of the file with other imports)
 class SetEncoder(json.JSONEncoder):
@@ -275,8 +368,11 @@ class SetEncoder(json.JSONEncoder):
             return list(obj)
         return super().default(obj)
 
+
 # Now the updated extract_user_context function
-async def extract_user_context(current_user: User) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+async def extract_user_context(
+    current_user: User,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Extracts user context by RECONSTRUCTING grades data from DB relationships
     to ensure freshness. Formats one part to mirror /auth/me and another
@@ -294,9 +390,13 @@ async def extract_user_context(current_user: User) -> Tuple[Dict[str, Any], Dict
     auth_me_like_context = {
         "moodle_data": {
             "user_info": {},
-            "courses": {"courses": [], "nextoffset": None}
+            "courses": {"courses": [], "nextoffset": None},
         },
-        "grades_status": {"fetched": False, "success": False, "error": "Initialization error."},
+        "grades_status": {
+            "fetched": False,
+            "success": False,
+            "error": "Initialization error.",
+        },
         "grades_data": {
             "student_name": "",
             "student_id": "",
@@ -304,15 +404,15 @@ async def extract_user_context(current_user: User) -> Tuple[Dict[str, Any], Dict
             "overall": {
                 "cumulative_gpa": None,
                 "degree_gpa": None,
-                "total_credits_earned": None
-            }
+                "total_credits_earned": None,
+            },
         },
         "credit_check": {
             "status": "not_fetched",
             "error": None,
             "analysis": None,
-            "reports": None
-        }
+            "reports": None,
+        },
     }
 
     # Initialize the dictionary for prompt formatting fields
@@ -329,161 +429,227 @@ async def extract_user_context(current_user: User) -> Tuple[Dict[str, Any], Dict
         "graduation_report_text": "No credit check analysis available.",
         "graduation_summary": "Unknown",
         "potential_graduation_json": "{}",
-        "potential_summary": "Unknown"
+        "potential_summary": "Unknown",
     }
 
     try:
         # --- Populate User Info ---
         user_name = f"{getattr(current_user, 'firstname', '')} {getattr(current_user, 'lastname', '')}".strip()
-        student_id = getattr(current_user, 'student_id', 'N/A')
-        email = getattr(current_user, 'email', 'N/A')
+        student_id = getattr(current_user, "student_id", "N/A")
+        email = getattr(current_user, "email", "N/A")
 
         auth_me_like_context["moodle_data"]["user_info"] = {
             "name": user_name,
             "email": email,
-            "student_id": student_id
+            "student_id": student_id,
         }
         prompt_fields["user_name"] = user_name
         prompt_fields["student_id"] = student_id
 
         # --- Populate Moodle Courses (from enrollments relationship) ---
         current_courses_list_for_prompt = []
-        if hasattr(current_user, 'enrollments') and current_user.enrollments:
+        if hasattr(current_user, "enrollments") and current_user.enrollments:
             for enrollment in current_user.enrollments:
-                 if hasattr(enrollment, 'course') and enrollment.course:
+                if hasattr(enrollment, "course") and enrollment.course:
                     course = enrollment.course
                     # Map Course object fields to the MoodleDataOut structure
                     course_data_auth = {
-                        "id": getattr(course, 'id', None),
-                        "fullname": getattr(course, 'fullname', "Unknown Course Name"),
-                        "shortname": getattr(course, 'shortname', None),
-                        "idnumber": getattr(course, 'idnumber', None),
-                        "summary": getattr(course, 'summary', None),
-                        "summaryformat": getattr(course, 'summaryformat', 1),
-                        "startdate": int(getattr(course, 'startdate', 0)),
-                        "enddate": int(getattr(course, 'enddate', 0)),
-                        "visible": getattr(course, 'visible', True),
-                        "showactivitydates": getattr(course, 'showactivitydates', False),
-                        "showcompletionconditions": getattr(course, 'showcompletionconditions', None),
-                        "fullnamedisplay": getattr(course, 'fullname', "Unknown Course Name"),
+                        "id": getattr(course, "id", None),
+                        "fullname": getattr(course, "fullname", "Unknown Course Name"),
+                        "shortname": getattr(course, "shortname", None),
+                        "idnumber": getattr(course, "idnumber", None),
+                        "summary": getattr(course, "summary", None),
+                        "summaryformat": getattr(course, "summaryformat", 1),
+                        "startdate": int(getattr(course, "startdate", 0)),
+                        "enddate": int(getattr(course, "enddate", 0)),
+                        "visible": getattr(course, "visible", True),
+                        "showactivitydates": getattr(
+                            course, "showactivitydates", False
+                        ),
+                        "showcompletionconditions": getattr(
+                            course, "showcompletionconditions", None
+                        ),
+                        "fullnamedisplay": getattr(
+                            course, "fullname", "Unknown Course Name"
+                        ),
                         "viewurl": f"/course/view.php?id={getattr(course, 'id', '')}",
-                        "coursecategory": getattr(course, 'coursecategory', "Unknown") # Check attribute name on Course model
+                        "coursecategory": getattr(
+                            course, "coursecategory", "Unknown"
+                        ),  # Check attribute name on Course model
                     }
-                    auth_me_like_context["moodle_data"]["courses"]["courses"].append(course_data_auth)
+                    auth_me_like_context["moodle_data"]["courses"]["courses"].append(
+                        course_data_auth
+                    )
 
                     # Populate prompt_fields["current_courses"]
-                    shortname = getattr(course, 'shortname', "Unknown")
-                    code = shortname.split()[0] if shortname != "Unknown" else "Unknown" # Basic code extraction
+                    shortname = getattr(course, "shortname", "Unknown")
+                    code = (
+                        shortname.split()[0] if shortname != "Unknown" else "Unknown"
+                    )  # Basic code extraction
                     prompt_course_data = {
-                         "code": code,
-                         "name": getattr(course, 'fullname', "Unknown Course Name"),
-                         "id": getattr(course, 'id', None),
-                         "full_shortname": shortname,
-                         "idnumber": getattr(course, 'idnumber', None),
-                         "status": getattr(enrollment, 'status', 'Enrolled') # Assuming status on enrollment
-                     }
+                        "code": code,
+                        "name": getattr(course, "fullname", "Unknown Course Name"),
+                        "id": getattr(course, "id", None),
+                        "full_shortname": shortname,
+                        "idnumber": getattr(course, "idnumber", None),
+                        "status": getattr(
+                            enrollment, "status", "Enrolled"
+                        ),  # Assuming status on enrollment
+                    }
                     current_courses_list_for_prompt.append(prompt_course_data)
 
         prompt_fields["current_courses"] = current_courses_list_for_prompt
         if current_courses_list_for_prompt:
-             prompt_fields["user_courses_summary"] = ", ".join([c.get("code", "Unknown") for c in current_courses_list_for_prompt])
+            prompt_fields["user_courses_summary"] = ", ".join(
+                [c.get("code", "Unknown") for c in current_courses_list_for_prompt]
+            )
 
         # --- Populate Grades Data & Status ---
         # Always reconstruct from relationships to ensure freshness and correct details.
         grades_available = False
-        if hasattr(current_user, 'grades') and current_user.grades:
-            logger.info("Reconstructing grades_data from user DB relationships (terms/grades).")
+        if hasattr(current_user, "grades") and current_user.grades:
+            logger.info(
+                "Reconstructing grades_data from user DB relationships (terms/grades)."
+            )
             grades_available = True
             auth_me_like_context["grades_data"]["student_name"] = user_name
             auth_me_like_context["grades_data"]["student_id"] = student_id
-            terms_dict = {} # To hold reconstructed terms {term_code: term_data}
+            terms_dict = {}  # To hold reconstructed terms {term_code: term_data}
 
             # Pre-process terms if available to get term-level stats
-            if hasattr(current_user, 'terms') and current_user.terms:
+            if hasattr(current_user, "terms") and current_user.terms:
                 for term in current_user.terms:
-                    term_code = getattr(term, 'term_code', 'UnknownTerm')
+                    term_code = getattr(term, "term_code", "UnknownTerm")
                     terms_dict[term_code] = {
-                        "term_code": term_code, "courses": [],
-                        "semester_gpa": getattr(term, 'semester_gpa', None),
-                        "cumulative_gpa": getattr(term, 'cumulative_gpa', None),
-                        "degree_gpa": getattr(term, 'degree_gpa', None),
-                        "credits_earned_to_date": getattr(term, 'credits_earned_to_date', None)
+                        "term_code": term_code,
+                        "courses": [],
+                        "semester_gpa": getattr(term, "semester_gpa", None),
+                        "cumulative_gpa": getattr(term, "cumulative_gpa", None),
+                        "degree_gpa": getattr(term, "degree_gpa", None),
+                        "credits_earned_to_date": getattr(
+                            term, "credits_earned_to_date", None
+                        ),
                     }
 
             # --- Process Grades ---
             grade_history_for_prompt = []
-            for grade in current_user.grades: # 'grade' is an instance of CourseGrade model
+            for (
+                grade
+            ) in current_user.grades:  # 'grade' is an instance of CourseGrade model
                 # Get Term Code from the relationship
-                term_obj = getattr(grade, 'term', None)
-                term_code = getattr(term_obj, 'term_code', 'UnknownTerm') if term_obj else 'UnknownTerm'
+                term_obj = getattr(grade, "term", None)
+                term_code = (
+                    getattr(term_obj, "term_code", "UnknownTerm")
+                    if term_obj
+                    else "UnknownTerm"
+                )
 
                 # Get code, title, and credits DIRECTLY from the CourseGrade object itself
-                course_code = getattr(grade, 'course_code', "Unknown")
-                course_title = getattr(grade, 'course_title', "Unknown Title")
-                credit_hours = getattr(grade, 'credit_hours', 3.0) # Use 3.0 as default if null/missing
+                course_code = getattr(grade, "course_code", "Unknown")
+                course_title = getattr(grade, "course_title", "Unknown Title")
+                credit_hours = getattr(
+                    grade, "credit_hours", 3.0
+                )  # Use 3.0 as default if null/missing
 
                 # Create course entry for the nested grades_data structure
                 course_entry_auth = {
-                     "course_code": course_code,
-                     "course_title": course_title,
-                     "credit_hours": credit_hours,
-                     "grade_earned": getattr(grade, 'grade_earned', "NA"), # Get the actual grade earned
-                     "whatif_grade": getattr(grade, 'whatif_grade', None)  # Get the what-if grade
+                    "course_code": course_code,
+                    "course_title": course_title,
+                    "credit_hours": credit_hours,
+                    "grade_earned": getattr(
+                        grade, "grade_earned", "NA"
+                    ),  # Get the actual grade earned
+                    "whatif_grade": getattr(
+                        grade, "whatif_grade", None
+                    ),  # Get the what-if grade
                 }
 
                 # Add course entry to the corresponding term in terms_dict
                 if term_code not in terms_dict:
-                     # Create term entry if it wasn't pre-loaded (e.g., only grades are available)
-                     terms_dict[term_code] = {
-                         "term_code": term_code, "courses": [],
-                         "semester_gpa": None, "cumulative_gpa": None,
-                         "degree_gpa": None, "credits_earned_to_date": None
-                     }
+                    # Create term entry if it wasn't pre-loaded (e.g., only grades are available)
+                    terms_dict[term_code] = {
+                        "term_code": term_code,
+                        "courses": [],
+                        "semester_gpa": None,
+                        "cumulative_gpa": None,
+                        "degree_gpa": None,
+                        "credits_earned_to_date": None,
+                    }
                 terms_dict[term_code]["courses"].append(course_entry_auth)
 
                 # --- Add to flat grade_history for prompt_fields ---
-                grade_history_for_prompt.append({
-                    "term": term_code,
-                    "course_code": course_code,
-                    "course_title": course_title,
-                    "credit_hours": credit_hours,
-                    "grade": course_entry_auth["grade_earned"] # Reflect the earned grade here
-                })
+                grade_history_for_prompt.append(
+                    {
+                        "term": term_code,
+                        "course_code": course_code,
+                        "course_title": course_title,
+                        "credit_hours": credit_hours,
+                        "grade": course_entry_auth[
+                            "grade_earned"
+                        ],  # Reflect the earned grade here
+                    }
+                )
 
             # Finalize the reconstructed grades_data for auth_me_like_context
             auth_me_like_context["grades_data"]["terms"] = list(terms_dict.values())
             # Sort terms consistently (e.g., reverse chronological, CURRENT first)
             auth_me_like_context["grades_data"]["terms"].sort(
-                key=lambda t: ("0" if t.get("term_code") == "CURRENT" else str(t.get("term_code", "Z"))),
-                reverse=True
+                key=lambda t: (
+                    "0"
+                    if t.get("term_code") == "CURRENT"
+                    else str(t.get("term_code", "Z"))
+                ),
+                reverse=True,
             )
 
             # Update prompt_fields with reconstructed data
             prompt_fields["grade_history"] = grade_history_for_prompt
-            prompt_fields["grades_data_raw"] = auth_me_like_context["grades_data"] # Pass full structure
+            prompt_fields["grades_data_raw"] = auth_me_like_context[
+                "grades_data"
+            ]  # Pass full structure
 
             # Update status to reflect successful reconstruction
-            auth_me_like_context["grades_status"] = {"fetched": True, "success": True, "error": None}
+            auth_me_like_context["grades_status"] = {
+                "fetched": True,
+                "success": True,
+                "error": None,
+            }
 
             # Extract overall GPA/Credits from the *most recent reconstructed term* for prompt_fields
             reconstructed_non_current = [
-                t for t in auth_me_like_context["grades_data"]["terms"]
-                if t.get("term_code") != "CURRENT" and t.get("cumulative_gpa") is not None
+                t
+                for t in auth_me_like_context["grades_data"]["terms"]
+                if t.get("term_code") != "CURRENT"
+                and t.get("cumulative_gpa") is not None
             ]
-            if reconstructed_non_current: # Already sorted, take the first one
+            if reconstructed_non_current:  # Already sorted, take the first one
                 recent_reconstructed_term = reconstructed_non_current[0]
-                prompt_fields["user_gpa"] = str(recent_reconstructed_term["cumulative_gpa"])
+                prompt_fields["user_gpa"] = str(
+                    recent_reconstructed_term["cumulative_gpa"]
+                )
                 if recent_reconstructed_term.get("credits_earned_to_date") is not None:
-                     prompt_fields["total_credits"] = str(recent_reconstructed_term["credits_earned_to_date"])
+                    prompt_fields["total_credits"] = str(
+                        recent_reconstructed_term["credits_earned_to_date"]
+                    )
             else:
-                logger.warning(f"Could not determine overall GPA/Credits from reconstructed terms for user {student_id}.")
+                logger.warning(
+                    f"Could not determine overall GPA/Credits from reconstructed terms for user {student_id}."
+                )
 
-        else: # No grade relationships found for reconstruction
-            logger.warning(f"No grade data relationships found for user {student_id}. Grades context will be empty.")
-            auth_me_like_context["grades_status"] = {"fetched": False, "success": False, "error": "No grade data available for user in DB relationships."}
+        else:  # No grade relationships found for reconstruction
+            logger.warning(
+                f"No grade data relationships found for user {student_id}. Grades context will be empty."
+            )
+            auth_me_like_context["grades_status"] = {
+                "fetched": False,
+                "success": False,
+                "error": "No grade data available for user in DB relationships.",
+            }
             auth_me_like_context["grades_data"]["student_name"] = user_name
             auth_me_like_context["grades_data"]["student_id"] = student_id
-            prompt_fields["grades_data_raw"] = auth_me_like_context["grades_data"] # Pass empty structure
+            prompt_fields["grades_data_raw"] = auth_me_like_context[
+                "grades_data"
+            ]  # Pass empty structure
 
         # --- Run Credit Check Analysis if Available ---
         if credit_check and get_db and grades_available:
@@ -492,106 +658,146 @@ async def extract_user_context(current_user: User) -> Tuple[Dict[str, Any], Dict
                 async_session = None
                 db_iterator = get_db()
                 try:
-                    async_session = await anext(db_iterator) if hasattr(db_iterator, "__anext__") else next(db_iterator)
+                    async_session = (
+                        await anext(db_iterator)
+                        if hasattr(db_iterator, "__anext__")
+                        else next(db_iterator)
+                    )
                 except (StopAsyncIteration, StopIteration):
                     logger.error("Failed to get database session for credit check")
-                
+
                 if async_session:
                     # Run credit check
-                    credit_check_result = await credit_check(current_user, async_session)
-                    
+                    credit_check_result = await credit_check(
+                        current_user, async_session
+                    )
+
                     # Add to contexts
                     auth_me_like_context["credit_check"] = {
                         "status": "fetched",
                         "error": None,
                         "analysis": credit_check_result["analysis"],
-                        "reports": credit_check_result["reports"]
+                        "reports": credit_check_result["reports"],
                     }
-                    
+
                     # Format for prompt fields - Using SetEncoder to handle sets
                     prompt_fields["graduation_status_json"] = json.dumps(
-                        credit_check_result["analysis"], 
+                        credit_check_result["analysis"],
                         ensure_ascii=False,
-                        cls=SetEncoder
+                        cls=SetEncoder,
                     )
-                    prompt_fields["graduation_report_text"] = credit_check_result["reports"]
-                    
+                    prompt_fields["graduation_report_text"] = credit_check_result[
+                        "reports"
+                    ]
+
                     # Extract key summaries
-                    eligible = credit_check_result["analysis"]["eligible_for_graduation"]
+                    eligible = credit_check_result["analysis"][
+                        "eligible_for_graduation"
+                    ]
                     prompt_fields["graduation_summary"] = (
-                        "Eligible for graduation" if eligible 
+                        "Eligible for graduation"
+                        if eligible
                         else "Not eligible for graduation"
                     )
-                    
+
                     # Add potential graduation info
-                    potential_result = credit_check_result["analysis"].get("potential_graduation", {})
+                    potential_result = credit_check_result["analysis"].get(
+                        "potential_graduation", {}
+                    )
                     if not potential_result:
                         # Run potential check if not already included in analysis
                         try:
-                            from academic.credit_check import check_potential_graduation_standardized
+                            from academic.credit_check import (
+                                check_potential_graduation_standardized,
+                            )
+
                             potential_result = check_potential_graduation_standardized(
-                                credit_check_result["analysis"], 
-                                student_info=None
+                                credit_check_result["analysis"], student_info=None
                             )
                         except ImportError:
-                            logger.warning("Could not import potential graduation check function")
+                            logger.warning(
+                                "Could not import potential graduation check function"
+                            )
                             potential_result = {}
-                    
+
                     # Using SetEncoder to handle sets in potential graduation data
                     prompt_fields["potential_graduation_json"] = json.dumps(
-                        potential_result,
-                        ensure_ascii=False,
-                        cls=SetEncoder
+                        potential_result, ensure_ascii=False, cls=SetEncoder
                     )
-                    potential_eligible = potential_result.get("potential_graduate", False)
+                    potential_eligible = potential_result.get(
+                        "potential_graduate", False
+                    )
                     prompt_fields["potential_summary"] = (
-                        "Potentially eligible for graduation" if potential_eligible
+                        "Potentially eligible for graduation"
+                        if potential_eligible
                         else "Not potentially eligible for graduation"
                     )
                 else:
                     logger.error("No database session available for credit check")
-                    auth_me_like_context["credit_check"]["error"] = "Database session unavailable"
-            
+                    auth_me_like_context["credit_check"][
+                        "error"
+                    ] = "Database session unavailable"
+
             except Exception as e:
-                logger.error(f"Error during credit check for user {student_id}: {e}", exc_info=True)
+                logger.error(
+                    f"Error during credit check for user {student_id}: {e}",
+                    exc_info=True,
+                )
                 auth_me_like_context["credit_check"] = {
                     "status": "error",
                     "error": str(e),
                     "analysis": None,
-                    "reports": None
+                    "reports": None,
                 }
         else:
-            reason = "Credit check function unavailable" if not credit_check else "No grade data available"
+            reason = (
+                "Credit check function unavailable"
+                if not credit_check
+                else "No grade data available"
+            )
             auth_me_like_context["credit_check"]["error"] = reason
             logger.info(f"Credit check not performed: {reason}")
 
     except Exception as e:
-        logger.error(f"Error during user context extraction for user {student_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error during user context extraction for user {student_id}: {e}",
+            exc_info=True,
+        )
         # Set error status, but try to return basic structure
-        auth_me_like_context["grades_status"] = {"fetched": False, "success": False, "error": f"Internal server error during context extraction: {e}"}
+        auth_me_like_context["grades_status"] = {
+            "fetched": False,
+            "success": False,
+            "error": f"Internal server error during context extraction: {e}",
+        }
         auth_me_like_context["credit_check"]["error"] = f"Context extraction error: {e}"
         # Ensure basic info is populated even on error
         if not auth_me_like_context["moodle_data"]["user_info"]:
-             auth_me_like_context["moodle_data"]["user_info"] = {"name": "Error", "email": "Error", "student_id": "Error"}
+            auth_me_like_context["moodle_data"]["user_info"] = {
+                "name": "Error",
+                "email": "Error",
+                "student_id": "Error",
+            }
         if not auth_me_like_context["grades_data"]["student_name"]:
-             auth_me_like_context["grades_data"]["student_name"] = user_name if 'user_name' in locals() else "Error"
-             auth_me_like_context["grades_data"]["student_id"] = student_id if 'student_id' in locals() else "Error"
+            auth_me_like_context["grades_data"]["student_name"] = (
+                user_name if "user_name" in locals() else "Error"
+            )
+            auth_me_like_context["grades_data"]["student_id"] = (
+                student_id if "student_id" in locals() else "Error"
+            )
 
     # Add grade history as JSON for prompt - also using SetEncoder
     prompt_fields["grade_history_json"] = json.dumps(
-        prompt_fields.get("grade_history", []), 
-        ensure_ascii=False,
-        cls=SetEncoder
+        prompt_fields.get("grade_history", []), ensure_ascii=False, cls=SetEncoder
     )
 
     # Return both the /auth/me structured data and the flat fields for prompt formatting
     return auth_me_like_context, prompt_fields
 
+
 # --- UPDATED: /rag/query Endpoint ---
 @router.post("/query", response_model=QueryResponse)
 async def query_endpoint(
-    request: QueryRequest,
-    current_user: User = Depends(get_current_user)
+    request: QueryRequest, current_user: User | Admin = Depends(get_current_account)
 ):
     """
     Process a natural language query against the document store,
@@ -603,11 +809,13 @@ async def query_endpoint(
     if not user_query:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
-    logger.info(f"Received query from user {current_user.id} ({getattr(current_user,'student_id','UNKNOWN')}): '{user_query}'")
+    logger.info(
+        f"Received query from user {current_user.id} ({getattr(current_user,'student_id','UNKNOWN')}): '{user_query}'"
+    )
 
     # 1. Load retriever, LLM, prompts
     ensemble_ret = get_ensemble_retriever()
-    llm          = get_llm()
+    llm = get_llm()
     if not ensemble_ret:
         raise HTTPException(status_code=503, detail="Retriever service unavailable.")
     if not llm:
@@ -616,13 +824,19 @@ async def query_endpoint(
 
     # 2. Query analysis & expansion
     analysis_start = time.perf_counter()
-    is_course_code_query = bool(re.search(r'\b[A-Z]{4}\d{4}\b', user_query, re.IGNORECASE))
-    is_complex_query     = len(user_query.split()) >= 10
-    prereq_pattern       = r'\b(?:pre[- ]?requisites?|requirements?)\b'
-    is_requirement_query = bool(re.search(prereq_pattern, user_query.lower())) \
-                            or any(w in user_query.lower() for w in ["credit","graduate","policy","rule","eligible"])
+    is_course_code_query = bool(
+        re.search(r"\b[A-Z]{4}\d{4}\b", user_query, re.IGNORECASE)
+    )
+    is_complex_query = len(user_query.split()) >= 10
+    prereq_pattern = r"\b(?:pre[- ]?requisites?|requirements?)\b"
+    is_requirement_query = bool(re.search(prereq_pattern, user_query.lower())) or any(
+        w in user_query.lower()
+        for w in ["credit", "graduate", "policy", "rule", "eligible"]
+    )
     should_expand = True
-    if is_course_code_query and any(kw in user_query.lower() for kw in ["credit","title","name","number"]):
+    if is_course_code_query and any(
+        kw in user_query.lower() for kw in ["credit", "title", "name", "number"]
+    ):
         should_expand = False
         logger.info("Specific course‐info query detected; skipping expansion.")
     expanded_queries = expand_query(user_query) if should_expand else [user_query]
@@ -646,7 +860,7 @@ async def query_endpoint(
     try:
         from .retrievers import get_doc_id as get_consistent_doc_id
     except ImportError:
-        get_consistent_doc_id = lambda d: getattr(d, 'id', id(d))
+        get_consistent_doc_id = lambda d: getattr(d, "id", id(d))
     unique_docs_map = {}
     for doc in all_initial_docs:
         doc_id = get_consistent_doc_id(doc)
@@ -662,7 +876,7 @@ async def query_endpoint(
             answer="I could not find any relevant documents based on your query.",
             processing_time=time.perf_counter() - start_time,
             context="No relevant documents found.",
-            user_context=auth_ctx
+            user_context=auth_ctx,
         )
 
     # 5. Extract & serialize user context
@@ -691,9 +905,9 @@ async def query_endpoint(
     # 8. Smart document selection (diversity)
     selection_start = time.perf_counter()
     candidates_count = min(context_doc_count * 2, len(reranked_docs))
-    top_candidates   = reranked_docs[:candidates_count]
-    selected_docs    = []
-    seen_sources     = set()
+    top_candidates = reranked_docs[:candidates_count]
+    selected_docs = []
+    seen_sources = set()
     for doc in top_candidates:
         if len(selected_docs) >= context_doc_count:
             break
@@ -732,7 +946,9 @@ async def query_endpoint(
     chosen_prompt_object = get_chosen_prompt(user_query, enriched_docs, prompts)
     if not chosen_prompt_object:
         chosen_prompt_object = prompts.get("default_prompt")
-    prompt_name = next((n for n,p in prompts.items() if p is chosen_prompt_object), "unknown")
+    prompt_name = next(
+        (n for n, p in prompts.items() if p is chosen_prompt_object), "unknown"
+    )
     prompt_selection_time = time.perf_counter() - prompt_selection_start
     logger.info(f"Using prompt '{prompt_name}' ({prompt_selection_time:.2f}s)")
 
@@ -741,12 +957,16 @@ async def query_endpoint(
         "context": formatted_context,
         "question": user_query,
         "current_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z"),
-        **prompt_fields
+        **prompt_fields,
     }
 
     try:
-        if hasattr(chosen_prompt_object, 'input_variables'):
-            valid = {k: format_args[k] for k in chosen_prompt_object.input_variables if k in format_args}
+        if hasattr(chosen_prompt_object, "input_variables"):
+            valid = {
+                k: format_args[k]
+                for k in chosen_prompt_object.input_variables
+                if k in format_args
+            }
             for var in chosen_prompt_object.input_variables:
                 valid.setdefault(var, "N/A")
             prompt_str = chosen_prompt_object.format(**valid)
@@ -763,7 +983,7 @@ async def query_endpoint(
     llm_start = time.perf_counter()
     try:
         answer_obj = llm.invoke(prompt_str)
-        final_answer = getattr(answer_obj, 'content', str(answer_obj))
+        final_answer = getattr(answer_obj, "content", str(answer_obj))
     except Exception as e:
         logger.error(f"LLM call failed: {e}")
         raise HTTPException(status_code=503, detail=f"LLM service error: {e}")
@@ -777,15 +997,14 @@ async def query_endpoint(
         answer=final_answer.strip(),
         processing_time=total_time,
         context=formatted_context,
-        user_context=auth_me_like_context
+        user_context=auth_me_like_context,
     )
 
 
 # --- UPDATED: /rag/stream_query Endpoint ---
 @router.post("/stream_query")
 async def stream_query_endpoint(
-    request: QueryRequest,
-    current_user: User = Depends(get_current_user)
+    request: QueryRequest, current_user: User | Admin = Depends(get_current_account)
 ):
     """
     Stream a query using the same RAG pipeline as /query
@@ -801,9 +1020,9 @@ async def stream_query_endpoint(
 
         # 1. Load components
         ensemble_ret = get_ensemble_retriever()
-        llm          = get_llm()
+        llm = get_llm()
         if not ensemble_ret or not llm or not hasattr(llm, "stream"):
-            yield f"event: error\ndata: {{\"detail\":\"Retriever or LLM unavailable/doesn't support streaming.\"}}\n\n"
+            yield f'event: error\ndata: {{"detail":"Retriever or LLM unavailable/doesn\'t support streaming."}}\n\n'
             return
         prompts = get_prompts_dict()
 
@@ -811,15 +1030,23 @@ async def stream_query_endpoint(
         # (copy the same steps 2–10 from the /query handler above)
         # ------------ expand, retrieve, dedupe ------------
         # analysis
-        is_course_code_query = bool(re.search(r'\b[A-Z]{4}\d{4}\b', user_query, re.IGNORECASE))
-        is_complex_query     = len(user_query.split()) >= 10
-        prereq_pattern       = r'\b(?:pre[- ]?requisites?|requirements?)\b'
-        is_requirement_query = bool(re.search(prereq_pattern, user_query.lower())) or any(
-            w in user_query.lower() for w in ["credit","graduate","policy","rule","eligible"]
+        is_course_code_query = bool(
+            re.search(r"\b[A-Z]{4}\d{4}\b", user_query, re.IGNORECASE)
         )
-        should_expand = not (is_course_code_query and any(
-            kw in user_query.lower() for kw in ["credit","title","name","number"]
-        ))
+        is_complex_query = len(user_query.split()) >= 10
+        prereq_pattern = r"\b(?:pre[- ]?requisites?|requirements?)\b"
+        is_requirement_query = bool(
+            re.search(prereq_pattern, user_query.lower())
+        ) or any(
+            w in user_query.lower()
+            for w in ["credit", "graduate", "policy", "rule", "eligible"]
+        )
+        should_expand = not (
+            is_course_code_query
+            and any(
+                kw in user_query.lower() for kw in ["credit", "title", "name", "number"]
+            )
+        )
         expanded_queries = expand_query(user_query) if should_expand else [user_query]
 
         all_docs = []
@@ -832,7 +1059,7 @@ async def stream_query_endpoint(
         try:
             from .retrievers import get_doc_id as get_consistent_doc_id
         except ImportError:
-            get_consistent_doc_id = lambda d: getattr(d,'id',id(d))
+            get_consistent_doc_id = lambda d: getattr(d, "id", id(d))
         unique_map = {}
         for d in all_docs:
             unique_map.setdefault(get_consistent_doc_id(d), d)
@@ -841,9 +1068,9 @@ async def stream_query_endpoint(
             auth_ctx, _ = await extract_user_context(current_user)
             payload = {
                 "answer": "",
-                "processing_time": time.perf_counter()-start_time,
+                "processing_time": time.perf_counter() - start_time,
                 "context": "No relevant documents found.",
-                "user_context": auth_ctx
+                "user_context": auth_ctx,
             }
             yield f"event: end\ndata: {json.dumps(payload)}\n\n"
             return
@@ -862,25 +1089,30 @@ async def stream_query_endpoint(
 
         # dynamic size
         N = 10
-        if is_course_code_query:    N = 8
-        elif is_complex_query:      N = 15
-        elif is_requirement_query:  N = 15
+        if is_course_code_query:
+            N = 8
+        elif is_complex_query:
+            N = 15
+        elif is_requirement_query:
+            N = 15
 
         # diversity selection
-        candidates = reranked_docs[: min(len(reranked_docs), N*2) ]
+        candidates = reranked_docs[: min(len(reranked_docs), N * 2)]
         selected = []
         seen = set()
         for d in candidates:
-            if len(selected) >= N: break
-            src = d.metadata.get("source_file","unknown")
-            if src not in seen or len(selected) < (N//2):
+            if len(selected) >= N:
+                break
+            src = d.metadata.get("source_file", "unknown")
+            if src not in seen or len(selected) < (N // 2):
                 selected.append(d)
                 seen.add(src)
         if len(selected) < N:
             needed = N - len(selected)
             current_ids = {get_consistent_doc_id(d) for d in selected}
             for d in candidates:
-                if needed == 0: break
+                if needed == 0:
+                    break
                 did = get_consistent_doc_id(d)
                 if did not in current_ids:
                     selected.append(d)
@@ -897,18 +1129,25 @@ async def stream_query_endpoint(
             "context": formatted_context,
             "question": user_query,
             "current_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z"),
-            **prompt_fields
+            **prompt_fields,
         }
         if hasattr(chosen, "input_variables"):
-            valid = {k:format_args[k] for k in chosen.input_variables if k in format_args}
-            for v in chosen.input_variables: valid.setdefault(v, "N/A")
+            valid = {
+                k: format_args[k] for k in chosen.input_variables if k in format_args
+            }
+            for v in chosen.input_variables:
+                valid.setdefault(v, "N/A")
             prompt_str = chosen.format(**valid)
         else:
             prompt_str = chosen.format(**format_args)
 
         # 9. Stream LLM
         for chunk in llm.stream(prompt_str):
-            text = getattr(chunk, "content", chunk if isinstance(chunk, str) else chunk.get("text",""))
+            text = getattr(
+                chunk,
+                "content",
+                chunk if isinstance(chunk, str) else chunk.get("text", ""),
+            )
             if text:
                 sse = json.dumps({"text": text, "type": "chunk"})
                 yield f"event: message\ndata: {sse}\n\n"
@@ -921,21 +1160,33 @@ async def stream_query_endpoint(
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
 
-
 # --- Other Endpoints ---
 @router.post("/switch_llm")
 async def switch_llm_endpoint(request: SwitchLLMRequest):
     """Switches the backend LLM used by the RAG service."""
-    if request.backend not in ["ollama", "gemini"]: # Add other valid backends as needed
-        raise HTTPException(status_code=400, detail="Invalid backend specified. Valid options: ollama, gemini.")
+    if request.backend not in [
+        "ollama",
+        "gemini",
+    ]:  # Add other valid backends as needed
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid backend specified. Valid options: ollama, gemini.",
+        )
     try:
         # Assuming switch_llm_backend handles the logic and returns the new backend name
         result = switch_llm_backend(request.backend)
         logger.info(f"Switched LLM backend to: {result}")
-        return {"message": f"Successfully switched LLM backend to {result}", "backend": result}
+        return {
+            "message": f"Successfully switched LLM backend to {result}",
+            "backend": result,
+        }
     except Exception as e:
-        logger.error(f"Failed to switch LLM backend to {request.backend}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to switch LLM backend: {e}")
+        logger.error(
+            f"Failed to switch LLM backend to {request.backend}: {e}", exc_info=True
+        )
+        raise HTTPException(
+            status_code=500, detail=f"Failed to switch LLM backend: {e}"
+        )
 
 
 @router.get("/model_info")
@@ -947,11 +1198,15 @@ async def model_info_endpoint():
         return info
     except Exception as e:
         logger.error(f"Failed to get model info: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve model info: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to retrieve model info: {e}"
+        )
 
 
 @router.get("/user_context_info", response_model=Dict[str, Any])
-async def user_context_endpoint(current_user: User = Depends(get_current_user)):
+async def user_context_endpoint(
+    current_user: User | Admin = Depends(get_current_account),
+):
     """
     Returns the extracted user context structured like the /auth/me response.
     Useful for debugging what data is being prepared for the RAG response context.
@@ -961,7 +1216,10 @@ async def user_context_endpoint(current_user: User = Depends(get_current_user)):
         auth_me_like_context, _ = await extract_user_context(current_user)
         return auth_me_like_context
     except Exception as e:
-        logger.error(f"Error extracting user context for info endpoint: {e}", exc_info=True)
+        logger.error(
+            f"Error extracting user context for info endpoint: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Error extracting user context")
+
 
 # --- End of Router Definition ---
