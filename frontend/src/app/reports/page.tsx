@@ -33,7 +33,7 @@ import {
   Landmark
 } from 'lucide-react'
 import { formatTermLabel } from '@/utils/termUtils'
-
+import { toast } from 'react-toastify';
 /* —————————————————— Grade Trends Chart —————————————————— */
 const GradeTrendsChart: React.FC = () => {
   const [view, setView] = useState<
@@ -295,7 +295,7 @@ const GradesDashboardContent: React.FC = () => {
             <span>Credits Earned</span><Landmark className="h-4 w-4 text-purple-500"/>
           </div>
           <div className="text-2xl font-semibold">{earnedCredits}</div>
-          <Button variant="outline" className="mt-3 text-xs" onClick={()=>alert('Graduation audit coming soon!')}>Check Graduation Status</Button>
+          <Button variant="outline" className="mt-3 text-xs" onClick={()=>toast.success('Coming Soon !!!')}>Check Graduation Status</Button>
         </div>
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">

@@ -4,6 +4,8 @@ import { Provider } from 'react-redux';
 import { PersistGate } from 'redux-persist/integration/react';
 import { store, persistor } from '@/store';
 import { AuthProvider } from './auth-provider';
+import { ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 
 export function ClientProviders({ children }: { children: React.ReactNode }) {
   return (
@@ -11,6 +13,7 @@ export function ClientProviders({ children }: { children: React.ReactNode }) {
       <PersistGate loading={null} persistor={persistor}>
         <AuthProvider>
           {children}
+          <ToastContainer />
         </AuthProvider>
       </PersistGate>
     </Provider>
