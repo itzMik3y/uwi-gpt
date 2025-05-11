@@ -1,0 +1,577 @@
+{
+	"info": {
+		"_postman_id": "223ec1b3-2a91-4c44-9130-6a5e785b0d5d",
+		"name": "uwi-gpt",
+		"schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json",
+		"_exporter_id": "33501503"
+	},
+	"item": [
+		{
+			"name": "CRUD",
+			"item": [
+				{
+					"name": "Admin",
+					"item": [
+						{
+							"name": "get all admins",
+							"request": {
+								"method": "GET",
+								"header": []
+							},
+							"response": []
+						},
+						{
+							"name": "create admin",
+							"request": {
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\r\n  \"firstname\": \"Jordan\",\r\n  \"lastname\": \"Smith\",\r\n  \"email\": \"jordan.smith@example.com\",\r\n  \"password\": \"securepassword123\",\r\n  \"login_id\": 42\r\n}\r\n",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": "http://0.0.0.0:8000/moodle/admin"
+							},
+							"response": []
+						},
+						{
+							"name": "get admin by id",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "http://0.0.0.0:8000/moodle/admin/:adminID",
+									"protocol": "http",
+									"host": [
+										"0",
+										"0",
+										"0",
+										"0"
+									],
+									"port": "8000",
+									"path": [
+										"moodle",
+										"admin",
+										":adminID"
+									],
+									"variable": [
+										{
+											"key": "adminID",
+											"value": "2"
+										}
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "update admin",
+							"request": {
+								"method": "PUT",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\r\n    \"login_id\": 123451223\r\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "http://0.0.0.0:8000/moodle/admin/:adminID",
+									"protocol": "http",
+									"host": [
+										"0",
+										"0",
+										"0",
+										"0"
+									],
+									"port": "8000",
+									"path": [
+										"moodle",
+										"admin",
+										":adminID"
+									],
+									"variable": [
+										{
+											"key": "adminID",
+											"value": "2"
+										}
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "delete admin",
+							"request": {
+								"method": "DELETE",
+								"header": [],
+								"url": {
+									"raw": "http://0.0.0.0:8000/moodle/admin/:adminID",
+									"protocol": "http",
+									"host": [
+										"0",
+										"0",
+										"0",
+										"0"
+									],
+									"port": "8000",
+									"path": [
+										"moodle",
+										"admin",
+										":adminID"
+									],
+									"variable": [
+										{
+											"key": "adminID",
+											"value": "2"
+										}
+									]
+								}
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "Booking-Availability Slots",
+					"item": [
+						{
+							"name": "create availability slots",
+							"request": {
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\r\n  \"admin_id\": 1,\r\n  \"slots\": [\r\n    {\r\n      \"start_time\": \"2025-05-01T09:00:00\",\r\n      \"end_time\": \"2025-05-01T10:00:00\"\r\n    },\r\n    {\r\n      \"start_time\": \"2025-05-01T10:30:00\",\r\n      \"end_time\": \"2025-05-01T11:30:00\"\r\n    }\r\n  ]\r\n}\r\n",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": "http://0.0.0.0:8000/moodle/scheduler/slots"
+							},
+							"response": []
+						},
+						{
+							"name": "book slot",
+							"request": {
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\r\n    \"slot_id\": 9,\r\n    \"student_id\": 1\r\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": "http://0.0.0.0:8000/moodle/scheduler/bookings"
+							},
+							"response": []
+						},
+						{
+							"name": "unbook slot",
+							"request": {
+								"method": "DELETE",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\r\n    \"slot_id\": 9,\r\n    \"student_id\": 1\r\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": "http://0.0.0.0:8000/moodle/scheduler/bookings"
+							},
+							"response": []
+						},
+						{
+							"name": "get all slots available to student",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": "http://0.0.0.0:8000/moodle/scheduler/slots/available"
+							},
+							"response": []
+						},
+						{
+							"name": "get all available slots for particular admin",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "http://0.0.0.0:8000/moodle/scheduler/slots/available?admin_id=1",
+									"protocol": "http",
+									"host": [
+										"0",
+										"0",
+										"0",
+										"0"
+									],
+									"port": "8000",
+									"path": [
+										"moodle",
+										"scheduler",
+										"slots",
+										"available"
+									],
+									"query": [
+										{
+											"key": "admin_id",
+											"value": "1"
+										}
+									]
+								}
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "Create User",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"firstname\": \"Jordan\",\r\n    \"lastname\": \"Campbell\",\r\n    \"email\": \"jordancampbell@gmail.com\",\r\n    \"student_id\": \"620155675\",\r\n    \"password\": \"testsomethign$2\"\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": "http://0.0.0.0:8000/moodle/db/user"
+					},
+					"response": []
+				},
+				{
+					"name": "GET USER",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://0.0.0.0:8000/moodle/db/user/:userID",
+							"protocol": "http",
+							"host": [
+								"0",
+								"0",
+								"0",
+								"0"
+							],
+							"port": "8000",
+							"path": [
+								"moodle",
+								"db",
+								"user",
+								":userID"
+							],
+							"variable": [
+								{
+									"key": "userID",
+									"value": "1"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create Course",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": "http://0.0.0.0:8000/moodle/db/course"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Course",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "http://0.0.0.0:8000/moodle/db/course"
+					},
+					"response": []
+				},
+				{
+					"name": "Create Term",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": "http://0.0.0.0:8000/moodle/db/term"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Term by user",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://0.0.0.0:8000/moodle/db/term/user/:userID",
+							"protocol": "http",
+							"host": [
+								"0",
+								"0",
+								"0",
+								"0"
+							],
+							"port": "8000",
+							"path": [
+								"moodle",
+								"db",
+								"term",
+								"user",
+								":userID"
+							],
+							"variable": [
+								{
+									"key": "userID",
+									"value": ""
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create Enrollment",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": "http://0.0.0.0:8000/moodle/db/enrollment"
+					},
+					"response": []
+				},
+				{
+					"name": "TEST",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "http://0.0.0.0:8000/moodle/test-db"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "AUTH",
+			"item": [
+				{
+					"name": "Admin Login",
+					"request": {
+						"method": "GET",
+						"header": []
+					},
+					"response": []
+				},
+				{
+					"name": "Full Admin Data",
+					"request": {
+						"method": "GET",
+						"header": []
+					},
+					"response": []
+				},
+				{
+					"name": "Refresh",
+					"request": {
+						"method": "GET",
+						"header": []
+					},
+					"response": []
+				},
+				{
+					"name": "Logout",
+					"request": {
+						"method": "GET",
+						"header": []
+					},
+					"response": []
+				},
+				{
+					"name": "Logout All",
+					"request": {
+						"method": "GET",
+						"header": []
+					},
+					"response": []
+				},
+				{
+					"name": "Admin Sessions",
+					"request": {
+						"method": "GET",
+						"header": []
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "get data from sas",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"username\": \"620155675\",\r\n    \"password\": \"ZUD6TFZ-\"\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "http://0.0.0.0:8000/moodle/data-sas"
+			},
+			"response": []
+		},
+		{
+			"name": "get data from VLE",
+			"request": {
+				"auth": {
+					"type": "noauth"
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"username\": \"620155675\",\r\n    \"password\": \"ZUD6TFZ-\"\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "http://0.0.0.0:8000/moodle/data"
+			},
+			"response": []
+		},
+		{
+			"name": "test",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": "http://0.0.0.0:8000/"
+			},
+			"response": []
+		},
+		{
+			"name": "switch LLM for front end",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n \"backend\": \"gemini\"\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "http://0.0.0.0:8000/rag/switch_llm"
+			},
+			"response": []
+		},
+		{
+			"name": "sas registration page request",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "https://ban.mona.uwi.edu:9071/StudentRegistrationSsb/ssb/searchResults/searchResults?txt_subject=COMP&txt_campus=M&txt_term=202430&startDatepicker=&endDatepicker=&uniqueSessionId=s9t4y1744820776510&pageOffset=0&pageMaxSize=10&sortColumn=subjectDescription&sortDirection=asc&[object%20Object]",
+					"protocol": "https",
+					"host": [
+						"ban",
+						"mona",
+						"uwi",
+						"edu"
+					],
+					"port": "9071",
+					"path": [
+						"StudentRegistrationSsb",
+						"ssb",
+						"searchResults",
+						"searchResults"
+					],
+					"query": [
+						{
+							"key": "txt_subject",
+							"value": "COMP"
+						},
+						{
+							"key": "txt_campus",
+							"value": "M"
+						},
+						{
+							"key": "txt_term",
+							"value": "202430"
+						},
+						{
+							"key": "startDatepicker",
+							"value": ""
+						},
+						{
+							"key": "endDatepicker",
+							"value": ""
+						},
+						{
+							"key": "uniqueSessionId",
+							"value": "s9t4y1744820776510"
+						},
+						{
+							"key": "pageOffset",
+							"value": "0"
+						},
+						{
+							"key": "pageMaxSize",
+							"value": "10"
+						},
+						{
+							"key": "sortColumn",
+							"value": "subjectDescription"
+						},
+						{
+							"key": "sortDirection",
+							"value": "asc"
+						},
+						{
+							"key": "[object%20Object]",
+							"value": null
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "prereq sas reg request",
+			"request": {
+				"method": "GET",
+				"header": []
+			},
+			"response": []
+		},
+		{
+			"name": "extra sas",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": "http://0.0.0.0:8000/moodle/extra-sas"
+			},
+			"response": []
+		}
+	]
+}
