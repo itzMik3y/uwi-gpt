@@ -7,7 +7,8 @@ from sqlalchemy import (
     ForeignKey,
     DateTime,
     Table,
-    UniqueConstraint
+    UniqueConstraint,
+    Text,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.asyncio import AsyncAttrs
@@ -15,7 +16,11 @@ from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.sql import func
 import datetime
 import time
-
+from sqlalchemy import Enum
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine
 
 class Base(AsyncAttrs, DeclarativeBase):
     pass
@@ -280,3 +285,4 @@ class CatalogPrerequisite(Base):
             f"<Prereq {self.and_or or ''} {self.subject}"  
             f" {self.number} level={self.level} grade={self.grade}>"
         )
+

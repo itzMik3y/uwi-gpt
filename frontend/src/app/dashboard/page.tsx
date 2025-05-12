@@ -1,12 +1,47 @@
 // app/dashboard/page.tsx
 "use client"
 
+import { useState, useEffect } from "react"
 import Link from "next/link"
 import { MessageSquare, Calendar, FileText, GraduationCap, BookOpen, Clock, ChevronRight } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Layout } from "@/app/components/layout/Layout"
 import { useSelector } from "react-redux"
 import { RootState } from "@/store"
+
+// Typing Animation Component
+const TypingAnimation = ({ text, speed = 50 }) => {
+  const [displayText, setDisplayText] = useState("")
+  const [index, setIndex] = useState(0)
+  const [showCursor, setShowCursor] = useState(true)
+
+  useEffect(() => {
+    if (index < text.length) {
+      const timeout = setTimeout(() => {
+        setDisplayText(prev => prev + text.charAt(index))
+        setIndex(index + 1)
+      }, speed)
+      
+      return () => clearTimeout(timeout)
+    }
+  }, [index, text, speed])
+
+  // Blinking cursor effect
+  useEffect(() => {
+    const cursorInterval = setInterval(() => {
+      setShowCursor(prev => !prev)
+    }, 500)
+    
+    return () => clearInterval(cursorInterval)
+  }, [])
+
+  return (
+    <span>
+      {displayText}
+      {showCursor && <span className="animate-pulse">|</span>}
+    </span>
+  )
+}
 
 export default function Dashboard() {
   // Get user from Redux store
@@ -19,6 +54,18 @@ export default function Dashboard() {
   const fullName = user?.name || "User";
   // Split by space and take the first part as the first name
   const firstName = fullName.split(' ')[0];
+  
+  // State to control when to start the welcome animation
+  const [showWelcome, setShowWelcome] = useState(false)
+
+  // Start animation after a short delay for better UX
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setShowWelcome(true)
+    }, 300)
+    
+    return () => clearTimeout(timer)
+  }, [])
   
   // Format current date
   const currentDate = new Date()
@@ -40,9 +87,15 @@ export default function Dashboard() {
 
   return (
     <Layout>
-      {/* Welcome banner */}
+      {/* Welcome banner with typing animation */}
       <div className="bg-blue-600 p-8 text-white">
-        <h1 className="mb-1 text-3xl font-bold">Welcome back, {firstName}!</h1>
+        <h1 className="mb-1 text-3xl font-bold">
+          {showWelcome ? (
+            <TypingAnimation text={`Welcome back, ${firstName}!`} speed={70} />
+          ) : (
+            <span className="opacity-0">Welcome back, {firstName}!</span>
+          )}
+        </h1>
         <p className="mb-1">{formattedDate} | {formattedTime}</p>
         <p className="italic">"Excellence is not a skill. It's an attitude."</p>
       </div>
