@@ -212,7 +212,6 @@ class SlotSummary(BaseModel):
 
 
 class SlotBulkCreate(BaseModel):
-    admin_id: int
     slots: list[SlotSummary]
 
     class Config:
@@ -231,7 +230,6 @@ class SlotOut(BaseModel):
 
 
 class BookingCreate(BaseModel):
-    student_id: int
     slot_id: int
 
 

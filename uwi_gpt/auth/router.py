@@ -2,7 +2,7 @@
 
 import logging
 import asyncio
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Body
 from fastapi.security import OAuth2PasswordBearer
@@ -15,7 +15,7 @@ from .config import jwt_settings
 
 # --- Database and User DB Components ---
 from user_db.database import get_db
-from user_db.models import User, Admin
+from user_db.models import Calendar_Course, Calendar_Session, User, Admin
 
 # v-- Import DB Schemas from user_db.schemas --v
 from user_db.schemas import (
@@ -42,6 +42,10 @@ from .models import (
     AdminInfoOut,
     AdminMeResponse,
     BookingOut,
+    Calendar_Course_Schema,
+    CalendarCourseOut,
+    CourseScheduleOut,
+    SessionOut,
     SlotOut,
     StudentOut,
     Token,
@@ -648,12 +652,53 @@ async def read_users_me_structured(
             error=None,
         )
 
+        """
+        Turn user.imported_sessions (List[Calendar_Session]) into
+        a Dict[course_code, Course] as per your schema.
+        """
+        # 1) Build a raw dict of CourseOut objects
+        raw: Dict[str, CalendarCourseOut] = {}
+
+        for orm_sess in current_user.imported_sessions:
+            section = orm_sess.section
+            course = section.course
+            code = course.code
+            title = course.title
+            sec_id = section.section_code
+
+            # ensure the CourseOut exists
+            if code not in raw:
+                raw[code] = CalendarCourseOut(
+                    title=title, sections={}  # will fill in below
+                )
+
+            # convert the ORM session into your SessionOut
+            pydantic_sess = SessionOut(
+                instructor=orm_sess.instructor,
+                level=orm_sess.level,
+                session_type=orm_sess.session_type,
+                campus=orm_sess.campus,
+                where=orm_sess.location,
+                date_range=orm_sess.date_range,
+                start_date=orm_sess.start_date,  # datetime
+                end_date=orm_sess.end_date,  # datetime
+                time=orm_sess.time,
+                start_time=orm_sess.start_time,  # datetime.time
+                end_time=orm_sess.end_time,  # datetime.time
+            )
+
+            # append into the right section list
+            sect_map: Dict[str, List[SessionOut]] = raw[code].sections
+            sect_map.setdefault(sec_id, []).append(pydantic_sess)
+
         # 4. Combine into the final response
         return MeResponse(
             moodle_data=moodle_data,
             grades_status=grades_status,
             grades_data=grades_data,
+            calendar_course_schedule=CourseScheduleOut(raw),
         )
+
     except Exception as e:
         logger.error(
             f"Error structuring /me response for user {current_user.id}: {e}",

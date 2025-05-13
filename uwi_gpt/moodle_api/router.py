@@ -40,23 +40,32 @@ from user_db.services import (
     get_stu_available_slots,
     get_terms_by_user,
     get_user_by_id,
+    get_user_calendar_schedule,
     list_courses,
     get_course_by_id,
     get_term_by_user_and_code,
     create_or_update_course_grade,
     get_course_grades_by_user,
     get_course_grades_by_term,
+    save_course_schedule,
     superadmin_required,
     unbook_stu_slot,
     update_admin,
 )
+from auth.utils import get_current_account
+from auth.models import CourseScheduleOut
 from .models import MoodleCredentials, SASCredentials
-from .service import fetch_moodle_details, fetch_uwi_sas_details, fetch_extra_sas_info
+from .service import (
+    fetch_calendar_sas_info,
+    fetch_moodle_details,
+    fetch_uwi_sas_details,
+    fetch_extra_sas_info,
+)
 from sqlalchemy.orm import selectinload
 from user_db.database import AsyncSessionLocal, get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from user_db.models import User, Course, Term, EnrolledCourse, CourseGrade
+from user_db.models import Admin, User, Course, Term, EnrolledCourse, CourseGrade
 import asyncio
 from sqlalchemy import text
 
@@ -148,7 +157,7 @@ async def get_moodle_data_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    If the user exists, return their stored courses & grades.
+    If the user exists, return their stored courses & grades & calendar_info.
     Otherwise, scrape Moodle (+ SAS) in parallel, upsert to the DB, and return everything.
     """
 
@@ -484,20 +493,42 @@ async def get_extra_sas_info_endpoint(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.post("/calendar-sas", summary="Fetch course calendar from SAS")
+async def get_calendar_info_sas_endpoint(
+    credentials: SASCredentials,
+):
+    """
+    Fetch calendar SAS info using the provided credentials.
+    """
+    try:
+        data = fetch_calendar_sas_info(credentials)
+        return {
+            "data": data,
+        }
+    except Exception as e:
+        logger.error(f"Error fetching calendar SAS info: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 # SCHEDULING ROUTES
 @router.post("/scheduler/slots", response_model=List[SlotOut])
 async def create_slot(
     data: SlotBulkCreate,
     db: AsyncSession = Depends(get_db),
+    current_admin: User | Admin = Depends(get_current_account),
 ):
-    return await create_bulk_availability_slots(db, data)
+    return await create_bulk_availability_slots(db, data, current_admin.id)
 
 
 @router.post("/scheduler/bookings")
-async def book_slot(data: BookingCreate, db: AsyncSession = Depends(get_db)):
+async def book_slot(
+    data: BookingCreate,
+    db: AsyncSession = Depends(get_db),
+    current_student: User | Admin = Depends(get_current_account),
+):
     try:
 
-        return await book_stu_slot(db, data.slot_id, data.student_id)
+        return await book_stu_slot(db, data.slot_id, current_student.id)
     except ValueError as e:
         # Catch the ValueError and return it as an HTTP exception with the message
         logger.error(f"Error booking slot: {e}")
@@ -588,3 +619,16 @@ async def delete_admin_from_db(admin_id: int, db: AsyncSession = Depends(get_db)
     if not deleted_admin:
         raise HTTPException(status_code=404, detail="Admin not found")
     return {"message": "Admin deleted successfully"}
+
+
+# CALENDAR ROUTES
+@router.get(
+    "/calendar-courses",
+    response_model=CourseScheduleOut,
+    summary="Get course schedule from DB",
+)
+async def get_my_schedule(
+    current_user: User | Admin = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    return await get_user_calendar_schedule(current_user.id, db)

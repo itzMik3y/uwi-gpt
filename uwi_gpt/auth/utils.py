@@ -21,6 +21,8 @@ from user_db.models import (
     Admin,
     AvailabilitySlot,
     Booking,
+    Calendar_Section,
+    Calendar_Session,
     User,
     EnrolledCourse,
     CourseGrade,
@@ -311,6 +313,10 @@ async def get_current_account(
                 selectinload(User.grades).selectinload(CourseGrade.course),
                 # Load terms directly associated with the user
                 selectinload(User.terms),
+                # ── new calendar loads ──
+                selectinload(User.imported_sessions)
+                .selectinload(Calendar_Session.section)
+                .selectinload(Calendar_Section.course),
             )
         )
         result = await db.execute(stmt)

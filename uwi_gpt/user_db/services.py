@@ -1,16 +1,29 @@
 from datetime import datetime, timezone
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from dateutil import parser as date_parser
+from fastapi import APIRouter, HTTPException, Depends
+from collections import defaultdict
+from auth.models import (
+    CalendarCourseOut,
+    CourseSchedule,
+    CourseScheduleOut,
+    SessionDBOut,
+)
 from .models import (
     Admin,
     AdminToken,
     AvailabilitySlot,
     Booking,
+    Calendar_Course,
+    Calendar_Section,
+    Calendar_Session,
     Course,
     EnrolledCourse,
     Term,
     User,
     CourseGrade,
+    User_Session,
 )
 from .schemas import (
     AdminCreate,
@@ -24,11 +37,10 @@ from .schemas import (
     CourseGradeCreate,
 )
 from sqlalchemy.orm import selectinload
-from sqlalchemy.future import select
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, select, delete
 
 import hashlib
-from typing import Optional, List
+from typing import Dict, Optional, List
 from .models import UserToken
 import time
 from .schemas import UserTokenCreate
@@ -469,8 +481,12 @@ async def get_course_grades_by_term(db: AsyncSession, user_id: int, term_id: int
 #     return slot
 
 
-async def create_bulk_availability_slots(db: AsyncSession, data: SlotBulkCreate):
-    result = await db.execute(select(Admin).where(Admin.id == data.admin_id))
+async def create_bulk_availability_slots(
+    db: AsyncSession,
+    data: SlotBulkCreate,
+    admin_id: int,
+):
+    result = await db.execute(select(Admin).where(Admin.id == admin_id))
     admin = result.scalars().first()
 
     if not admin:
@@ -478,7 +494,7 @@ async def create_bulk_availability_slots(db: AsyncSession, data: SlotBulkCreate)
 
     # 1. Get existing slots from DB
     existing_slots_result = await db.execute(
-        select(AvailabilitySlot).where(AvailabilitySlot.admin_id == data.admin_id)
+        select(AvailabilitySlot).where(AvailabilitySlot.admin_id == admin_id)
     )
     existing_slots = existing_slots_result.scalars().all()
 
@@ -518,7 +534,7 @@ async def create_bulk_availability_slots(db: AsyncSession, data: SlotBulkCreate)
 
     for slot in data.slots:
         new_slot = AvailabilitySlot(
-            admin_id=data.admin_id,
+            admin_id=admin_id,
             start_time=slot.start_time,
             end_time=slot.end_time,
             is_booked=False,
@@ -535,6 +551,13 @@ async def create_bulk_availability_slots(db: AsyncSession, data: SlotBulkCreate)
 
 
 async def book_stu_slot(db: AsyncSession, slot_id: str, student_id: str):
+
+    result = await db.execute(select(User).where(User.id == student_id))
+    student = result.scalars().first()
+
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
     # Fetch the slot
     result = await db.execute(
         select(AvailabilitySlot).where(AvailabilitySlot.id == slot_id)
@@ -653,7 +676,7 @@ async def seed_superadmin(db: AsyncSession):
         return
 
     # If no superadmin, create one
-    await create_admin(
+    await create_super_admin(
         db=db,
         data=AdminCreate(
             firstname="Default",
@@ -685,6 +708,28 @@ async def create_admin(
         email=data.email,
         password_hash=hash_password(data.password),
         is_superadmin=False,
+        login_id=data.login_id,
+    )
+    db.add(admin)
+    await db.commit()
+    await db.refresh(admin)
+    return admin
+
+
+async def create_super_admin(
+    db: AsyncSession,
+    data: AdminCreate,
+):
+    existing_admin = await db.execute(select(Admin).where(Admin.email == data.email))
+    if existing_admin.scalars().first():
+        raise ValueError("Admin with this email already exists.")
+
+    admin = Admin(
+        firstname=data.firstname,
+        lastname=data.lastname,
+        email=data.email,
+        password_hash=hash_password(data.password),
+        is_superadmin=True,
         login_id=data.login_id,
     )
     db.add(admin)
@@ -744,3 +789,149 @@ async def delete_admin(db: AsyncSession, admin_id: int):
     await db.delete(admin)
     await db.commit()
     return admin
+
+
+async def save_course_schedule(
+    db: AsyncSession, user_id: int, schedule: CourseSchedule
+) -> None:
+    """
+    1) Upsert master courses, sections, sessions.
+    2) Rebuild the user_sessions links so the user only has the imported sessions.
+    """
+    imported_session_ids = []
+
+    # 1) Upsert master data
+    for course_code, course_obj in schedule.items():
+        # -- Course --
+        result = await db.execute(select(Calendar_Course).filter_by(code=course_code))
+        course = result.scalar_one_or_none()
+        if course is None:
+            course = Calendar_Course(code=course_code, title=course_obj["title"])
+            db.add(course)
+            await db.flush()
+        else:
+            course.title = course_obj["title"]
+
+        # -- Sections & Sessions --
+        for section_code, sessions_list in course_obj["sections"].items():
+            # upsert section
+            result = await db.execute(
+                select(Calendar_Section).filter_by(
+                    course_id=course.id, section_code=section_code
+                )
+            )
+            section = result.scalar_one_or_none()
+            if section is None:
+                section = Calendar_Section(
+                    course_id=course.id, section_code=section_code
+                )
+                db.add(section)
+                await db.flush()
+
+            # upsert each session
+            for sess in sessions_list:
+                # parse dates
+                try:
+                    start_str, end_str = [
+                        p.strip() for p in sess["date_range"].split(" - ", 1)
+                    ]
+                    start_date = date_parser.parse(start_str)
+                    end_date = date_parser.parse(end_str)
+                except Exception:
+                    start_date = end_date = None
+
+                # parse times
+                try:
+                    tstart, tend = [t.strip() for t in sess["time"].split(" - ", 1)]
+                    start_time = date_parser.parse(tstart).time()
+                    end_time = date_parser.parse(tend).time()
+                except Exception:
+                    start_time = end_time = None
+
+                # look for an existing identical session
+                stmt = select(Calendar_Session).filter_by(
+                    section_id=section.id,
+                    instructor=sess["instructor"],
+                    level=sess["level"],
+                    session_type=sess["session_type"],
+                    campus=sess["campus"],
+                    location=sess["where"],
+                    date_range=sess["date_range"],
+                    time=sess["time"],
+                )
+                result = await db.execute(stmt)
+                session_obj = result.scalar_one_or_none()
+
+                if session_obj is None:
+                    session_obj = Calendar_Session(
+                        section_id=section.id,
+                        instructor=sess["instructor"],
+                        level=sess["level"],
+                        session_type=sess["session_type"],
+                        campus=sess["campus"],
+                        location=sess["where"],
+                        date_range=sess["date_range"],
+                        start_date=start_date,
+                        end_date=end_date,
+                        time=sess["time"],
+                        start_time=start_time,
+                        end_time=end_time,
+                    )
+                    db.add(session_obj)
+                    await db.flush()
+
+                imported_session_ids.append(session_obj.id)
+
+    # 2) Rebuild user→session links
+    # a) remove any old links the user no longer has
+    await db.execute(
+        delete(User_Session).where(
+            User_Session.user_id == user_id,
+            User_Session.session_id.not_in(imported_session_ids),
+        )
+    )
+
+    # b) insert missing links
+    for sid in set(imported_session_ids):
+        # skip if already linked
+        stmt = select(User_Session).filter_by(user_id=user_id, session_id=sid)
+        result = await db.execute(stmt)
+        link = result.scalar_one_or_none()
+        if link is None:
+            db.add(User_Session(user_id=user_id, session_id=sid))
+
+    # 3) persist all changes
+    await db.commit()
+
+
+async def get_user_calendar_schedule(
+    user_id: int, db: AsyncSession
+) -> CourseScheduleOut:
+    # Query all sessions subscribed by the user
+    stmt = (
+        select(Calendar_Session)
+        .join(Calendar_Session.subscribed_users)
+        .where(User.id == user_id)
+    )
+    result = await db.execute(stmt)
+    sessions = result.scalars().all()
+
+    schedule: Dict[str, CalendarCourseOut] = {}
+
+    for session in sessions:
+        course = session.section.course
+        course_code = course.code
+        section_code = session.section.section_code
+
+        # Initialize course entry if not yet in the schedule
+        if course_code not in schedule:
+            schedule[course_code] = CalendarCourseOut(title=course.title, sections={})
+
+        # Append the session
+        session_out = SessionDBOut.model_validate(session)
+        if section_code not in schedule[course_code].sections:
+            schedule[course_code].sections[section_code] = []
+
+        schedule[course_code].sections[section_code].append(session_out)
+
+    return CourseScheduleOut(schedule)

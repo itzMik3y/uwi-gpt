@@ -31,18 +31,39 @@ extensions search screen
 -- Disable referential integrity temporarily (PostgreSQL-specific)
 SET session_replication_role = replica;
 
+-- 1) User‐session links
+DELETE FROM user_sessions;
+
+-- 2) Calendar master data
+DELETE FROM calendar_sessions;
+DELETE FROM calendar_sections;
+DELETE FROM calendar_courses;
+
+-- 3) Catalog master data
+DELETE FROM catalog_prerequisites;
+DELETE FROM catalog_courses;
+
+-- 4) Bookings & availability
 DELETE FROM bookings;
 DELETE FROM availability_slots;
+
+-- 5) Tokens
+DELETE FROM admin_tokens;
 DELETE FROM user_tokens;
+
+-- 6) Academic data
 DELETE FROM course_grades;
 DELETE FROM enrolled_courses;
 DELETE FROM terms;
 DELETE FROM courses;
+
+-- 7) Users & admins
 DELETE FROM admins;
 DELETE FROM users;
 
 -- Re-enable referential integrity
 SET session_replication_role = DEFAULT;
+
 
 
 # autofills db from script

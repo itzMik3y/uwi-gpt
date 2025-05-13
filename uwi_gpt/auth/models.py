@@ -1,7 +1,7 @@
 # auth/models.py
-from datetime import datetime
-from pydantic import BaseModel, EmailStr
-from typing import List, Optional
+from datetime import datetime, time as dtime
+from pydantic import BaseModel, EmailStr, ConfigDict, RootModel
+from typing import Dict, List, Optional
 
 
 class RefreshRequest(BaseModel):
@@ -117,13 +117,6 @@ class MoodleDataOut(BaseModel):  # Matches moodle_data structure
     # auth_tokens: dict
 
 
-# --- The final response model for /auth/me ---
-class MeResponse(BaseModel):
-    moodle_data: MoodleDataOut
-    grades_status: GradesStatusOut
-    grades_data: GradesDataOut
-
-
 class AdminInfoOut(BaseModel):
     name: str
     email: str
@@ -151,9 +144,104 @@ class SlotOut(BaseModel):
     booking: Optional[BookingOut] = None
 
 
+# Calendar SAS schemas
+class Calendar_Session_Schema(BaseModel):
+    instructor: str
+    level: str
+    session_type: str
+    campus: str
+    where: str
+    date_range: str
+    time: str
+
+
+class Calendar_Section_Schema(BaseModel):
+    # A section is a list of session entries (e.g., multiple lectures in M11)
+    sessions: List[Calendar_Session_Schema]
+
+
+class Calendar_Course_Schema(BaseModel):
+    title: str
+    sections: Dict[str, List[Calendar_Session_Schema]]  # Keys like "B01", "M11", etc.
+
+
+class CourseSchedule(BaseModel):
+    data: Dict[str, Calendar_Course_Schema]  # Keys like "COMP 3162", "INFO 3180", etc.
+    # might need to adjust to take out data property since the data outputted does not contain a data property
+
+
+### calendar output
+class SessionOut(BaseModel):
+    instructor: str
+    level: str
+    session_type: str
+    campus: str
+    where: str
+    date_range: str
+    start_date: datetime
+    end_date: datetime
+    time: str
+    start_time: dtime  # now a real datetime.time
+    end_time: dtime
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        arbitrary_types_allowed=True,
+    )
+
+
+class SessionDBOut(BaseModel):
+    instructor: str
+    level: str
+    session_type: str
+    campus: str
+    location: str
+    date_range: str
+    start_date: datetime
+    end_date: datetime
+    time: str
+    start_time: dtime  # now a real datetime.time
+    end_time: dtime
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        arbitrary_types_allowed=True,
+    )
+
+
+class CalendarCourseOut(BaseModel):
+    title: str
+    sections: Dict[str, List[SessionOut]]
+
+    class Config:
+        from_attributes = True
+
+
+class CourseScheduleOut(RootModel[Dict[str, CalendarCourseOut]]):
+    """
+    A root‐model whose “root” is Dict[str, CourseOut],
+    i.e. { "COMP 3162": { … }, "COMP 3901": { … } }
+    """
+
+    pass
+
+
+# --- The final response model for /auth/admin/me ---
+
+###
+
+
 class AdminMeResponse(BaseModel):
     admin_info: AdminInfoOut
     slots: List[SlotOut]
 
     class Config:
         from_attributes = True
+
+
+# --- The final response model for /auth/me ---
+class MeResponse(BaseModel):
+    moodle_data: MoodleDataOut
+    grades_status: GradesStatusOut
+    grades_data: GradesDataOut
+    calendar_course_schedule: CourseScheduleOut
