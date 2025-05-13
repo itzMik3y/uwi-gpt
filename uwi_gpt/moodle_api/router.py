@@ -59,7 +59,9 @@ from sqlalchemy.future import select
 from user_db.models import User, Course, Term, EnrolledCourse, CourseGrade
 import asyncio
 from sqlalchemy import text
-
+from user_db.models import Admin
+from auth.utils import get_current_account
+from fastapi import status
 
 # Optional: configure a logger specific to this module
 logger = logging.getLogger(__name__)
@@ -488,10 +490,20 @@ async def get_extra_sas_info_endpoint(
 @router.post("/scheduler/slots", response_model=List[SlotOut])
 async def create_slot(
     data: SlotBulkCreate,
+    current_account: Admin = Depends(get_current_account),
     db: AsyncSession = Depends(get_db),
 ):
+    # Verify that the current account is an admin
+    if not isinstance(current_account, Admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can create availability slots"
+        )
+    
+    # Automatically set the admin_id from the authenticated account
+    data.admin_id = current_account.id
+    
     return await create_bulk_availability_slots(db, data)
-
 
 @router.post("/scheduler/bookings")
 async def book_slot(data: BookingCreate, db: AsyncSession = Depends(get_db)):
@@ -517,9 +529,20 @@ async def available_slots(db: AsyncSession = Depends(get_db)):
     return await get_stu_available_slots(db)
 
 
-@router.get("/scheduler/admin/slots")
-async def admin_slots(admin_id: int, db: AsyncSession = Depends(get_db)):
-    return await get_admin_avail_slots(db, admin_id)
+@router.get("/scheduler/admin/slots", response_model=List[SlotOut])
+async def admin_slots(
+    current_account: Admin = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db)
+):
+    # Verify that the current account is an admin
+    if not isinstance(current_account, Admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can view their availability slots"
+        )
+    
+    # Use the admin_id from the authenticated account
+    return await get_admin_avail_slots(db, current_account.id)
 
 
 # SUPERADMIN ROUTE

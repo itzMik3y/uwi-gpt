@@ -35,6 +35,9 @@ import {
 import { formatTermLabel } from '@/utils/termUtils'
 import { useRouter } from 'next/navigation';
 import { toast } from 'react-toastify';
+import academicClient, { CreditCheckResponse } from '@/lib/api/academicClient'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 /* —————————————————— Grade Trends Chart —————————————————— */
 const GradeTrendsChart: React.FC = () => {
   const [view, setView] = useState<
@@ -192,31 +195,56 @@ const SemesterSection: React.FC<{
 const GradesDashboardContent: React.FC = () => {
   const gradesData = useSelector((s: RootState) => s.auth.gradesData)
   const userInfo = useSelector((s: RootState) => s.auth.user)
-  const router = useRouter();
+  const router = useRouter()
+
+  // State for transcript accordion
+  const [openTerms, setOpenTerms] = useState<string[]>([])
+  const toggleTerm = (code: string) =>
+    setOpenTerms((prev) =>
+      prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]
+    )
+
+  // State for AI insights
+  const [aiQuestion, setAiQuestion] = useState('')
+  const [aiInsights, setAiInsights] = useState<string | null>(null)
+  const [isLoadingInsights, setIsLoadingInsights] = useState(false)
+
+  const fetchInsights = async () => {
+    if (!aiQuestion.trim()) {
+      toast.error('Please enter a question.')
+      return
+    }
+    try {
+      setIsLoadingInsights(true)
+      const res = await academicClient.getAcademicInsights({ question: aiQuestion })
+      setAiInsights(res.insights)
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to fetch insights.')
+    } finally {
+      setIsLoadingInsights(false)
+    }
+  }
 
   if (!gradesData) return <p>Loading…</p>
 
-  // Current courses come from index 0
+  // Build transcript arrays
   const currentTerm = gradesData.terms[1]
-  // Completed terms from index 2 onward
   const transcriptTerms = gradesData.terms.slice(1)
   const completed = gradesData.terms.slice(2)
-
   const latest = completed[0] || null
   const prev = completed[1] || null
 
+  // GPA & credit metrics
   const currentGPA = latest?.semester_gpa ?? 0
   const delta = prev ? currentGPA - (prev.semester_gpa ?? 0) : 0
-
   const cumulativeGPA =
     gradesData.overall?.cumulative_gpa ?? latest?.cumulative_gpa ?? 0
   const cumPrev = prev?.cumulative_gpa ?? 0
   const cumDelta = cumulativeGPA - cumPrev
-
   const earnedCredits =
     gradesData.overall?.total_credits_earned ?? latest?.credits_earned_to_date ?? 0
-
-  const atRiskCourses = currentTerm?.courses.filter((c) => /^F|EI/.test(c.grade_earned)) || []
+  const atRiskCourses =
+    currentTerm?.courses.filter((c) => /^F|EI/.test(c.grade_earned)) || []
 
   const classifyStanding = (g: number) => {
     if (g >= 3.6) return 'First Class'
@@ -226,11 +254,7 @@ const GradesDashboardContent: React.FC = () => {
   }
   const standing = classifyStanding(cumulativeGPA)
 
-  const [openTerms, setOpenTerms] = useState<string[]>([])
-  const toggleTerm = (code: string) =>
-    setOpenTerms((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]))
-
-  /* — Excel export — */
+  // Excel export
   const exportToExcel = () => {
     const rows: Record<string, any>[] = []
     completed.forEach((t) => {
@@ -268,50 +292,65 @@ const GradesDashboardContent: React.FC = () => {
 
       {/* Summary Cards */}
       <div className="grid grid-cols-5 gap-4 mb-6">
+        {/* Current GPA */}
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
             <span>Current GPA</span><TrendingUp className="text-blue-500"/>
           </div>
           <div className="text-2xl font-semibold">{currentGPA.toFixed(2)}</div>
           {prev && (
-            <div className={`mt-1 flex items-center text-xs font-medium ${delta>=0?'text-green-600':'text-red-600'}`}> 
-              {delta>=0?<ArrowUp className="h-4 w-4 mr-1"/>:<ArrowDown className="h-4 w-4 mr-1"/>}
-              {delta>=0?'+':''}{delta.toFixed(2)} from last term
+            <div
+              className={`mt-1 flex items-center text-xs font-medium ${
+                delta >= 0 ? 'text-green-600' : 'text-red-600'
+              }`}
+            >
+              {delta >= 0 ? <ArrowUp className="h-4 w-4 mr-1"/> : <ArrowDown className="h-4 w-4 mr-1"/>}
+              {delta >= 0 ? '+' : ''}{delta.toFixed(2)} from last term
             </div>
           )}
         </div>
+        {/* Cumulative GPA */}
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
             <span>Cumulative GPA</span><TrendingUp className="text-blue-500"/>
           </div>
           <div className="text-2xl font-semibold">{cumulativeGPA.toFixed(2)}</div>
           {prev && (
-            <div className={`mt-1 flex items-center text-xs font-medium ${cumDelta>=0?'text-green-600':'text-red-600'}`}> 
-              {cumDelta>=0?<ArrowUp className="h-4 w-4 mr-1"/>:<ArrowDown className="h-4 w-4 mr-1"/>}
-              {cumDelta>=0?'+':''}{cumDelta.toFixed(2)} from last term
+            <div
+              className={`mt-1 flex items-center text-xs font-medium ${
+                cumDelta >= 0 ? 'text-green-600' : 'text-red-600'
+              }`}
+            >
+              {cumDelta >= 0 ? <ArrowUp className="h-4 w-4 mr-1"/> : <ArrowDown className="h-4 w-4 mr-1"/>}
+              {cumDelta >= 0 ? '+' : ''}{cumDelta.toFixed(2)} from last term
             </div>
           )}
         </div>
+        {/* Credits Earned */}
         <div className="p-4 bg-white border rounded-lg shadow-sm flex flex-col">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
             <span>Credits Earned</span><Landmark className="h-4 w-4 text-purple-500"/>
           </div>
           <div className="text-2xl font-semibold">{earnedCredits}</div>
-          <Button 
-  variant="outline" 
-  className="mt-3 text-xs" 
-  onClick={() => router.push('/graduation-status')}
->
-  Check Graduation Status
-</Button>
+          <Button
+            variant="outline"
+            className="mt-3 text-xs"
+            onClick={() => router.push('/graduation-status')}
+          >
+            Check Graduation Status
+          </Button>
         </div>
+        {/* At-Risk Courses */}
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
             <span>At-Risk Courses</span><Landmark className="h-4 w-4 text-red-500"/>
           </div>
           <div className="text-2xl font-semibold">{atRiskCourses.length}</div>
-          {atRiskCourses.length>0 && <div className="mt-1 text-xs text-red-600">Action needed</div>}
+          {atRiskCourses.length > 0 && (
+            <div className="mt-1 text-xs text-red-600">Action needed</div>
+          )}
         </div>
+        {/* Class Standing */}
         <div className="p-4 bg-white border rounded-lg shadow-sm">
           <div className="flex justify-between mb-1 text-xs text-gray-600">
             <span>Class Standing</span><Landmark className="h-4 w-4 text-yellow-500"/>
@@ -342,6 +381,7 @@ const GradesDashboardContent: React.FC = () => {
 
       {/* Main Layout */}
       <div className="grid grid-cols-5 gap-6">
+        {/* Left Column */}
         <div className="col-span-3 space-y-6">
           <div className="bg-white border rounded-lg p-4">
             <h2 className="text-lg font-medium mb-4">Grade Trends</h2>
@@ -352,30 +392,77 @@ const GradesDashboardContent: React.FC = () => {
             {currentTerm.courses.map((c, i) => {
               const risk = /^F|EI/.test(c.grade_earned)
               return (
-                <div key={i} className={`flex justify-between p-3 border rounded-lg mb-2 ${risk ? 'bg-red-50 border-red-200' : ''}`}>
+                <div
+                  key={i}
+                  className={`flex justify-between p-3 border rounded-lg mb-2 ${
+                    risk ? 'bg-red-50 border-red-200' : ''
+                  }`}
+                >
                   <div>
                     <h3 className="font-medium">{c.course_title}</h3>
                     <span className="text-sm text-gray-500">{c.course_code}</span>
                   </div>
-                  <span className={`px-2 py-1 rounded-full text-sm ${risk ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>{risk ? `At Risk: ${c.grade_earned}` : `Predicted: ${c.grade_earned}`}</span>
+                  <span
+                    className={`px-2 py-1 rounded-full text-sm flex items-center${
+                      risk
+                        ? 'bg-red-100 text-red-800'
+                        : 'bg-green-100 text-green-800'
+                    }`}
+                  >
+                    {risk
+                      ? `At Risk: ${c.grade_earned}`
+                      : `Predicted: ${c.grade_earned}`}
+                  </span>
                 </div>
               )
             })}
           </div>
         </div>
+
+        {/* Right Column */}
         <div className="col-span-2 space-y-6">
-          <div className="bg-white border rounded-lg p-4">
-            <div className="flex justify-between mb-4">
-              <h2 className="text-lg font-medium">AI Insights</h2>
-              <RefreshCw className="cursor-pointer text-gray-400" />
+          {/* AI Insights */}
+            <div className="bg-white border rounded-lg p-4">
+              <div className="flex justify-between mb-4">
+                <h2 className="text-lg font-medium">AI Insights</h2>
+                <RefreshCw
+                  onClick={fetchInsights}
+                  className="cursor-pointer text-gray-400"
+                />
+              </div>
+
+              {/* Scrollable, rendered Markdown */}
+              {aiInsights && (
+                <div className="mb-4 max-h-48 overflow-y-auto overflow-x-hidden border p-2 rounded bg-gray-50 prose prose-sm break-words">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {aiInsights}
+                  </ReactMarkdown>
+                </div>
+              )}
+
+              <textarea
+                value={aiQuestion}
+                onChange={(e) => setAiQuestion(e.target.value)}
+                placeholder="Ask a question about your grades..."
+                rows={3}
+                className="w-full border rounded-md p-2 text-sm"
+              />
+              <Button
+                onClick={fetchInsights}
+                disabled={isLoadingInsights}
+                className="mt-2"
+              >
+                {isLoadingInsights ? 'Thinking...' : 'Get Insights'}
+              </Button>
             </div>
-            <div className="p-3 border-l-4 border-yellow-400 mb-4"><Lightbulb className="inline-block mr-2" />Focus area identified: algorithm complexity in COMP3901.</div>
-            <div className="p-3 border-l-4 border-green-400 bg-green-50"><TrendingUp className="inline-block mr-2 text-green-600" />Positive trend: mobile development improving.</div>
-          </div>
+
+
+
+          {/* Academic Transcript */}
           <div className="bg-white border rounded-lg p-4">
             <h2 className="text-lg font-medium mb-4">Academic Transcript</h2>
             <div className="space-y-4 overflow-y-auto max-h-96 px-1 pb-1">
-              {transcriptTerms.map(term => (
+              {transcriptTerms.map((term) => (
                 <SemesterSection
                   key={term.term_code}
                   term={term}
@@ -384,10 +471,18 @@ const GradesDashboardContent: React.FC = () => {
                 />
               ))}
             </div>
-
             <div className="flex space-x-2 mt-4">
-              <Button onClick={exportToExcel} className="flex items-center bg-blue-600 hover:bg-blue-700"><Download className="mr-2" />Export Excel</Button>
-              <Button variant="outline" className="flex items-center"><Share2 className="mr-2" />Share</Button>
+              <Button
+                onClick={exportToExcel}
+                className="flex items-center bg-blue-600 hover:bg-blue-700"
+              >
+                <Download className="mr-2" />
+                Export Excel
+              </Button>
+              <Button variant="outline" className="flex items-center">
+                <Share2 className="mr-2" />
+                Share
+              </Button>
             </div>
           </div>
         </div>

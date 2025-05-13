@@ -1,7 +1,8 @@
 // app/api/ragClient.ts
 
 import { TOKEN_STORAGE_KEY, REFRESH_TOKEN_STORAGE_KEY, TOKEN_EXPIRY_KEY } from '@/lib/api/moodleClient';
-import { RagQueryRequest, RagQueryResponse } from '@/types/rag';
+// Ensure Message type is imported or defined if not in rag.ts
+import { RagQueryRequest, RagQueryResponse, Message } from '@/types/rag';
 
 // Get API URL from environment variable or use default
 const API_URL = process.env.NEXT_PUBLIC_RAG_API_URL || 'http://localhost:8000';
@@ -88,18 +89,21 @@ class RagApiClient {
   /**
    * Sends a query to the RAG API and gets a response
    * @param query The user's question
+   * @param history Optional array of previous messages for context
    * @param filters Optional filters to apply to the query
    */
   async sendQuery(
     query: string,
+    history?: Message[], // Added history parameter
     filters?: RagQueryRequest['filters']
   ): Promise<RagQueryResponse> {
     const endpoint = `${this.baseUrl}/rag/query`;
     const requestData: RagQueryRequest = {
       query,
+      ...(history && { history }), // Include history if provided
       ...(filters && { filters })
     };
-   
+    
     try {
       console.log('Sending RAG query:', requestData);
       
@@ -154,17 +158,25 @@ class RagApiClient {
 
   /**
    * Streams a query response from the RAG API using fetch and ReadableStream
+   * @param query The user's question
+   * @param history Optional array of previous messages for context
+   * @param onChunk Callback for each text chunk received
+   * @param onError Callback for errors
+   * @param onComplete Callback when streaming is complete
+   * @param filters Optional filters to apply to the query
    */
   streamQuery(
     query: string,
+    history: Message[] | undefined, // Added history parameter
     onChunk: (text: string) => void,
     onError: (error: Error) => void,
-    onComplete: (processingTime?: number) => void,
+    onComplete: (processingTime?: number, userContext?: any) => void, // Added userContext to onComplete
     filters?: RagQueryRequest['filters']
   ): () => void {
     const endpoint = `${this.baseUrl}/rag/stream_query`;
     const requestData: RagQueryRequest = {
       query,
+      ...(history && { history }), // Include history if provided
       ...(filters && { filters })
     };
 
@@ -198,7 +210,10 @@ class RagApiClient {
         if (response.status === 401) {
           throw new Error('Authentication required. Please log in again.');
         }
-        throw new Error(`HTTP error: ${response.status}`);
+        // Try to get error message from response body for other errors
+        return response.text().then(text => {
+          throw new Error(`HTTP error: ${response.status} - ${text || 'Unknown error'}`);
+        });
       }
       
       if (!response.body) {
@@ -214,7 +229,10 @@ class RagApiClient {
         return reader.read().then(({ done, value }) => {
           if (done) {
             clearTimeout(timeoutId);
-            onComplete();
+            // Note: The original onComplete only took processingTime.
+            // If the 'end' event from backend now includes user_context,
+            // it should be passed here. For now, assuming it might.
+            onComplete(); 
             return;
           }
           
@@ -228,7 +246,7 @@ class RagApiClient {
             const eventLines = eventStr.split('\n');
             
             // Extract event type and data
-            let eventType = 'message';
+            let eventType = 'message'; // Default event type
             let eventData = null;
             
             eventLines.forEach(line => {
@@ -247,12 +265,17 @@ class RagApiClient {
                 if (eventType === 'message' && parsedData.text) {
                   onChunk(parsedData.text);
                 } else if (eventType === 'error') {
-                  onError(new Error(parsedData.detail || 'Unknown error'));
+                  onError(new Error(parsedData.detail || 'Unknown streaming error'));
                 } else if (eventType === 'end') {
-                  onComplete(parsedData.processing_time);
+                  // Pass both processing_time and user_context if available
+                  onComplete(parsedData.processing_time, parsedData.user_context);
                 }
               } catch (e) {
-                console.error('Error parsing SSE data:', e);
+                // If JSON.parse fails, it might be a simple text chunk without JSON structure
+                // This can happen if the stream directly sends text for the 'message' event
+                // without wrapping it in JSON. For now, we assume JSON as per current logic.
+                console.error('Error parsing SSE data:', e, "Raw data:", eventData);
+                // onError(new Error('Error parsing streamed data.'));
               }
             }
           });
@@ -270,7 +293,7 @@ class RagApiClient {
       
       // Handle specific errors
       if (error.name === 'AbortError') {
-        onError(new Error('Request was aborted after timeout'));
+        onError(new Error('Request was aborted after timeout or cancellation.'));
       } else {
         console.error('Streaming error:', error);
         onError(error);
@@ -279,6 +302,7 @@ class RagApiClient {
     
     // Return function to abort the stream
     return () => {
+      console.log("Aborting stream query.");
       clearTimeout(timeoutId);
       controller.abort();
     };
@@ -291,7 +315,7 @@ class RagApiClient {
     const endpoint = `${this.baseUrl}/rag/sources`;
     
     try {
-      const { controller, timeoutId } = this.createAbortControllerWithTimeout(30000);
+      const { controller, timeoutId } = this.createAbortControllerWithTimeout(30000); // 30s timeout
       
       try {
         const response = await fetch(endpoint, {
@@ -309,7 +333,7 @@ class RagApiClient {
           // Handle authentication errors specifically
           if (response.status === 401) {
             console.error('Authentication required for RAG sources');
-            return [];
+            return []; // Or throw error, depending on desired behavior
           }
           throw new Error(`Failed to fetch sources: ${response.status}`);
         }
@@ -320,7 +344,7 @@ class RagApiClient {
       }
     } catch (error) {
       console.error('Error fetching RAG sources:', error);
-      // Return empty array instead of throwing to avoid breaking the UI
+      // Return empty array instead of throwing to avoid breaking the UI if sources are optional
       return [];
     }
   }

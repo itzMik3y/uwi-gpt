@@ -9,10 +9,11 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Card, CardContent } from "@/components/ui/card"
-import { Shield, GraduationCap, User } from "lucide-react"
+import { Shield, GraduationCap, User, Settings } from "lucide-react"
 import { useAppDispatch, useAppSelector } from "@/store/hooks"
 import { loginUser, fetchUserData } from "@/store/slices/authSlice"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { AdminLink } from "@/app/components/shared/admin-link"
 
 export default function LoginPage() {
   const [username, setUsername] = useState("")
@@ -186,13 +187,21 @@ export default function LoginPage() {
                 {isLoading ? 'Signing in...' : 'Sign In'}
               </Button>
               
-              {/* Registration Link */}
-              <p className="text-center text-sm text-gray-600">
-                Don&apos;t have an account?{" "}
-                <Link href="/register" className="font-medium text-red-600 hover:text-red-500">
-                  Create Account
-                </Link>
-              </p>
+              {/* Registration and Admin Links */}
+              <div className="flex justify-between items-center text-sm text-gray-600">
+                <p>
+                  Don&apos;t have an account?{" "}
+                  <Link href="/register" className="font-medium text-red-600 hover:text-red-500">
+                    Create Account
+                  </Link>
+                </p>
+                <p>
+                  <AdminLink className="flex items-center gap-1 font-medium text-red-600 hover:text-red-500">
+                    <Settings className="h-4 w-4" />
+                    Admin Portal
+                  </AdminLink>
+                </p>
+              </div>
             </form>
             
             <div className="mt-6 flex items-center justify-center text-sm text-gray-500">
@@ -203,4 +212,5 @@ export default function LoginPage() {
         </div>
       </Card>
     </div>
-  ) }
+  )
+}

@@ -23,7 +23,7 @@ import platform
 import joblib
 import nltk
 import pdfplumber
-
+from typing import List, Tuple
 from transformers import AutoTokenizer
 from langchain_community.document_loaders import TextLoader
 # from langchain_community.embeddings import SentenceTransformerEmbeddings
@@ -506,164 +506,432 @@ def load_markdown_from_disk(filepath, markdown_dir=None):
     
     return None
 
-def improved_document_chunker(documents: List[Document], min_chunk_size=300, chunk_size=1500, chunk_overlap=150) -> List[Document]:
+def improved_document_chunker(
+    documents: List[Document],
+    min_chunk_size: int = 300,
+    chunk_size: int = 1500,
+    chunk_overlap: int = 150
+) -> List[Document]:
     """
-    An improved document chunker that uses MarkdownTextSplitter and
-    merges small chunks with the *preceding* chunk to prevent very short chunks,
-    ensuring all content is preserved.
-
-    Args:
-        documents: List of Document objects to split (expected to have Markdown content).
-        min_chunk_size: Minimum size threshold for identifying small chunks (characters).
-                        Chunks smaller than this will be merged with the previous one if possible.
-        chunk_size: Target maximum size of each chunk in characters for the initial split.
-        chunk_overlap: Number of characters to overlap between chunks during the initial split.
-
-    Returns:
-        List of chunked Document objects with preserved metadata.
+    Chunk markdown documents, preferring headings, paragraphs, lists, then sentence boundaries,
+    and only overshooting if absolutely no separator is found.
     """
-    logging.info(f"Starting improved document chunking for {len(documents)} documents using MarkdownTextSplitter and backward merging.")
+    logging.info(f"Starting improved document chunking for {len(documents)} docs.")
 
-    # Initialize the Markdown splitter
-    text_splitter = MarkdownTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap
-    )
+    # Prioritized separators
+    separators = [
+        "\n## ",
+        "\n# ",
+        "\n\n",    # paragraph break
+        "\n- ",    # list
+        "\n* ",
+        "\n"       # single line break
+    ]
 
-    # --- REFINED MERGE FUNCTION ---
-    def merge_small_chunks_backward(texts: List[str], metadatas: List[dict], min_size: int) -> tuple[List[str], List[dict]]:
-        """
-        Merges chunks smaller than min_size with the *preceding* chunk.
-        Iterates backward to handle multiple small chunks correctly.
-        """
-        if not texts:
-            return [], []
+    def merge_small_chunks_backward(texts, metas, min_size):
+        i = len(texts) - 1
+        while i > 0:
+            if len(texts[i].strip()) < min_size:
+                texts[i-1] += "\n\n" + texts[i]
+                del texts[i], metas[i]
+            i -= 1
+        return texts, metas
 
-        merged_texts = list(texts)
-        merged_metadatas = [m.copy() for m in metadatas] # Ensure we work with copies
+    def custom_split(text: str) -> List[str]:
+        parts, start, L = [], 0, len(text)
+        sentence_boundary = re.compile(r'(?<=[\.?!])\s+')
 
-        i = len(merged_texts) - 1
-        while i > 0: # Start from the second-to-last chunk and go backward
-            current_text = merged_texts[i]
-            if len(current_text.strip()) < min_size:
-                # If the current chunk is too small, merge it with the previous one
-                logging.debug(f"Merging small chunk (index {i}, size {len(current_text.strip())}) backward.")
+        while start < L:
+            end_limit = min(start + chunk_size, L)
 
-                # Prepend the small chunk's content to the previous chunk's content
-                # Use a double newline as a separator
-                merged_texts[i-1] = merged_texts[i-1] + "\n\n" + current_text
+            # 1) Try the markdown headings / paragraphs / lists etc.
+            best_pos, best_len = -1, 0
+            for sep in separators:
+                p = text.rfind(sep, start, end_limit)
+                if p > best_pos:
+                    best_pos, best_len = p, len(sep)
 
-                # --- Metadata Merging Strategy ---
-                # Simple strategy: Keep the metadata of the preceding chunk (i-1)
-                # Optionally, you could try to combine titles or other fields if needed.
-                # For now, we just discard the metadata of the small chunk being merged.
-                # Example combining titles (if desired):
-                # prev_meta = merged_metadatas[i-1]
-                # current_meta = merged_metadatas[i]
-                # if "chunk_title" in current_meta and "chunk_title" not in prev_meta:
-                #     prev_meta["chunk_title"] = current_meta["chunk_title"]
-                # elif "chunk_title" in prev_meta and "chunk_title" in current_meta and prev_meta["chunk_title"] != current_meta["chunk_title"]:
-                #     prev_meta["chunk_title"] = f"{prev_meta['chunk_title']} | {current_meta['chunk_title']}"
-                # merged_metadatas[i-1] = prev_meta # Update the previous metadata
+            if best_pos >= 0:
+                split_end = best_pos + best_len
 
-                # Remove the merged chunk (text and metadata)
-                del merged_texts[i]
-                del merged_metadatas[i]
+            else:
+                # 2) Try any sentence boundary
+                window = text[start:end_limit]
+                boundaries = [m.end() for m in sentence_boundary.finditer(window)]
+                if boundaries:
+                    # pick the last boundary in that chunk
+                    split_end = start + boundaries[-1]
+                else:
+                    # 3) fallback: overshoot to next markdown sep (or end)
+                    next_pos, next_len = None, 0
+                    for sep in separators:
+                        p = text.find(sep, end_limit)
+                        if p != -1 and (next_pos is None or p < next_pos):
+                            next_pos, next_len = p, len(sep)
+                    split_end = (next_pos + next_len) if next_pos is not None else L
 
-                # Important: Since we deleted element at index i, the next element to check
-                # is now also at index i (if i < len(merged_texts)).
-                # However, our loop condition `i > 0` and decrementing `i` handles this correctly.
-                # We don't need to adjust `i` further here after deletion when iterating backward.
+            parts.append(text[start:split_end])
+            # always apply overlap
+            start = max(split_end - chunk_overlap, split_end)
 
-            i -= 1 # Move to the previous chunk
+        return parts
 
-        # After backward merging, check if the *first* chunk is now too small.
-        # It cannot be merged backward, so log a warning if it's smaller than min_size.
-        if merged_texts and len(merged_texts[0].strip()) < min_size:
-             logging.warning(f"The first chunk remains smaller than min_chunk_size ({len(merged_texts[0].strip())} chars) after backward merging.")
-
-        return merged_texts, merged_metadatas
-    # --- END REFINED MERGE FUNCTION ---
-
-    result_chunks = []
-    total_chunks_processed = 0
-
-    for doc_index, doc in enumerate(documents):
-        if not doc.page_content or not doc.page_content.strip():
-            logging.warning(f"Skipping empty document: {doc.metadata.get('source_file', f'doc_index_{doc_index}')}")
+    chunks: List[Document] = []
+    for doc in documents:
+        raw = (doc.page_content or "").strip()
+        if not raw:
             continue
 
-        doc_metadata = doc.metadata.copy()
+        # --- flatten code fences & merge tables ---
+        raw = re.sub(r"```.*?```", lambda m: m.group(0).replace("\n", " "), raw, flags=re.DOTALL)
+        lines, buf = raw.splitlines(), []
+        merged = []
+        for line in lines:
+            if line.strip().startswith("|") and "|" in line:
+                buf.append(line)
+            else:
+                if buf:
+                    merged.append(" ".join(buf)); buf = []
+                merged.append(line)
+        if buf:
+            merged.append(" ".join(buf))
+        clean = "\n".join(merged)
 
-        # Extract document title/heading (same logic as before)
-        content_lines = doc.page_content.strip().split('\n')
-        doc_title = None
-        for line in content_lines[:5]:
-            match = re.match(r'^#{{1,6}}\s+(.+)$', line)
-            if match:
-                doc_title = match.group(1).strip()
-                break
-        if not doc_title and content_lines:
-            doc_title = content_lines[0].strip()
-            if len(doc_title) > 100:
-                 doc_title = doc_title[:97] + "..."
-        if doc_title:
-            doc_metadata["doc_title"] = doc_title
+        # split up
+        parts = custom_split(clean)
 
-        # Split the document content using MarkdownTextSplitter
-        split_texts = text_splitter.split_text(doc.page_content)
+        # attach metadata
+        metas = []
+        for i, _ in enumerate(parts):
+            m = doc.metadata.copy()
+            m["initial_chunk_index"] = i
+            metas.append(m)
 
-        if not split_texts:
-             logging.warning(f"MarkdownTextSplitter produced no chunks for document: {doc.metadata.get('source_file', f'doc_index_{doc_index}')}")
-             continue
+        # merge too-small
+        merged_txts, merged_metas = merge_small_chunks_backward(parts, metas, min_chunk_size)
 
-        # Prepare initial metadata for each chunk
-        initial_metadatas = []
-        for i, text_chunk in enumerate(split_texts):
-            chunk_metadata = doc_metadata.copy()
-            # Store initial index for reference, though it will be overwritten later
-            chunk_metadata["initial_chunk_index"] = i
+        # finalize
+        total = len(merged_txts)
+        for idx, (txt, meta) in enumerate(zip(merged_txts, merged_metas)):
+            # trim stray bullets
+            txt = re.sub(r"[\r\n]+\s*[-*]\s*$", "", txt).strip()
+            meta["chunk_index"] = idx
+            meta["chunk_count"] = total
+            if txt:
+                chunks.append(Document(page_content=txt, metadata=meta))
 
-            # Extract chunk title/heading (same logic as before)
-            chunk_lines = text_chunk.strip().split('\n')
-            chunk_title = None
-            for line in chunk_lines[:3]:
-                match = re.match(r'^#{{1,6}}\s+(.+)$', line)
-                if match:
-                    chunk_title = match.group(1).strip()
-                    break
-            if chunk_title:
-                chunk_metadata["chunk_title"] = chunk_title
+    logging.info(f"Chunking completed: {len(chunks)} chunks generated.")
+    return chunks
 
-            initial_metadatas.append(chunk_metadata)
 
-        # Merge small chunks using the backward merging function
-        merged_texts, merged_metadatas = merge_small_chunks_backward(split_texts, initial_metadatas, min_chunk_size)
+def format_term_label(term_code: str) -> str:
+    """
+    Convert term codes like "201510" to human-readable format like "2015/2016 Semester I".
+    
+    Args:
+        term_code: Term code in format YYYYSS where SS is the semester code
+        
+    Returns:
+        Formatted term string
+    """
+    if not term_code or not term_code.isdigit() or len(term_code) < 6:
+        return term_code  # Return as-is if invalid format
+    
+    year = term_code[:4]
+    suffix = term_code[4:6]
+    next_year = str(int(year) + 1)
+    
+    if suffix == "10":
+        name = "Semester I"
+    elif suffix == "20":
+        name = "Semester II"
+    elif suffix == "40":
+        name = "Summer School"
+    else:
+        name = f"Term {suffix}"  # Fallback for unknown codes
+        
+    return f"{year}/{next_year} {name}"
 
-        # Create final Document objects for the merged chunks
-        num_chunks_in_doc = len(merged_texts)
-        for i, (text, metadata) in enumerate(zip(merged_texts, merged_metadatas)):
-            # Update chunk indices and count based on the final list after merging
-            metadata["chunk_index"] = i
-            metadata["chunk_count"] = num_chunks_in_doc
+def create_documents_from_course_data(courses_data: List[Dict[str, Any]]) -> List[Document]:
+    """
+    Create Document objects from course data JSON.
+    Each course is kept as a single document (not chunked) for better retrieval.
+    """
+    docs = []
+    for course in courses_data:
+        # Create a descriptive text combining all relevant information
+        page_content = []
+        
+        # Add title and course number
+        course_title = course.get("courseTitle", "Unknown Title")
+        course_number = course.get("courseNumber", "")
+        subject = course.get("subject", "")
+        subject_description = course.get("subjectDescription", "")
+        page_content.append(f"Course {subject}{course_number}: {course_title}")
+        
+        # Add subject description if available
+        if subject_description:
+            page_content.append(f"Subject: {subject_description}")
+        
+        # Add credits info
+        credit_low = course.get("creditHourLow")
+        credit_high = course.get("creditHourHigh")
+        if credit_low is not None and credit_high is not None:
+            page_content.append(f"Credits: {credit_low}-{credit_high}")
+        
+        # Add department and faculty (not college)
+        department = course.get("department", "")
+        faculty = course.get("college", "")  # Using college field but referring to it as faculty
+        if department or faculty:
+            parts = []
+            if department:
+                parts.append(f"Department: {department}")
+            if faculty:
+                parts.append(f"Faculty: {faculty}")  # Changed from College to Faculty
+            page_content.append(", ".join(parts))
+        
+        # Add term information with semester decoding if available
+        term_effective = course.get("termEffective", "")
+        if term_effective:
+            formatted_term = format_term_label(term_effective)
+            page_content.append(f"Term Effective: {formatted_term}")
+        
+        # Add prerequisites if available
+        if course.get("prerequisites") and len(course.get("prerequisites", [])) > 0:
+            prereq_parts = ["Prerequisites:"]
+            for prereq in course.get("prerequisites", []):
+                prereq_subject = prereq.get('subject', '')
+                prereq_number = prereq.get('number', '')
+                prereq_grade = prereq.get('grade', 'C')
+                
+                # Format as CHIN2001 (Chinese 2001)
+                prereq_code = f"{prereq_subject.split(' - ')[0]}{prereq_number}"
+                prereq_name = ""
+                if " - " in prereq.get('subject', ''):
+                    # Extract the full name if format is "CHIN - Chinese"
+                    subject_parts = prereq.get('subject', '').split(" - ")
+                    if len(subject_parts) > 1:
+                        prereq_name = f" ({subject_parts[1]} {prereq_number})"
+                prereq_parts.append(f"- {prereq_code}{prereq_name} (Grade: {prereq_grade})")
+            page_content.append("\n".join(prereq_parts))
+        else:
+            page_content.append("Prerequisites: None")
+        
+        # Add course description if available
+        course_description = course.get("courseDescription")
+        if course_description:
+            page_content.append(f"Description: {course_description}")
+        
+        # Create the document with rich metadata
+        formatted_term = format_term_label(term_effective) if term_effective else ""
+        docs.append(Document(
+            page_content="\n\n".join(page_content),
+            metadata={
+                "course_code": f"{subject}{course_number}",
+                "course_title": course_title,
+                "department": department,
+                "faculty": faculty,  # Changed from college to faculty
+                "subject_description": subject_description,
+                "subject": subject,
+                "subject_code": course.get("subjectCode", ""),
+                "credit_hours": f"{credit_low}-{credit_high}",
+                "credit_low": credit_low,
+                "credit_high": credit_high,
+                "doc_type": "course_description",
+                "source_file": "course_data.json",  # Will be updated with actual filename
+                "heading": f"Course {subject}{course_number}: {course_title}",
+                "format": "json",
+                "term_effective": term_effective,
+                "term_formatted": formatted_term,  # Add the formatted term to metadata as well
+                # Store concatenated subject+number for prerequisites
+                "prerequisites": [f"{p.get('subject', '').split(' - ')[0]}{p.get('number', '')}" for p in course.get("prerequisites", [])],
+                "has_prerequisites": len(course.get("prerequisites", [])) > 0
+            }
+        ))
+    return docs
+# --- JSON Caching Functions ---
 
-            # Remove the temporary initial index if it exists
-            metadata.pop("initial_chunk_index", None)
+def save_json_docs_to_cache(data, cache_dir=None, cache_name="course_data_cache.json"):
+    """Save processed course data to disk cache."""
+    if cache_dir is None:
+        cache_dir = os.path.join(BASE_DIR, "json_cache")
+    
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, cache_name)
+    
+    try:
+        # Convert Document objects to serializable dicts
+        serializable_data = []
+        for doc in data:
+            serializable_data.append({
+                "page_content": doc.page_content,
+                "metadata": doc.metadata,
+                "id": doc.id
+            })
+        
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(serializable_data, f, indent=2)
+        
+        logging.info(f"Saved {len(data)} course documents to cache at {cache_path}")
+        return cache_path
+    except Exception as e:
+        logging.error(f"Error saving course data cache: {e}")
+        return None
 
-            # Log if a chunk is still small (should only be the first one potentially)
-            if len(text.strip()) < min_chunk_size:
-                 # This logging might be redundant given the warning inside merge_small_chunks_backward
-                 pass # logging.info(f"Including first chunk smaller than min_size ({len(text.strip())}) from {metadata.get('source_file', 'unknown')}")
-
-            result_chunks.append(Document(
-                page_content=text.strip(),
-                metadata=metadata
+def load_json_docs_from_cache(cache_dir=None, cache_name="course_data_cache.json"):
+    """Load processed course documents from disk cache."""
+    if cache_dir is None:
+        cache_dir = os.path.join(BASE_DIR, "json_cache")
+    
+    cache_path = os.path.join(cache_dir, cache_name)
+    
+    if not os.path.exists(cache_path):
+        return None
+    
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            serialized_docs = json.load(f)
+        
+        # Convert back to Document objects
+        docs = []
+        for item in serialized_docs:
+            docs.append(Document(
+                page_content=item["page_content"],
+                metadata=item["metadata"],
+                id=item.get("id")
             ))
-        total_chunks_processed += num_chunks_in_doc
+        
+        logging.info(f"Loaded {len(docs)} course documents from cache at {cache_path}")
+        return docs
+    except Exception as e:
+        logging.error(f"Error loading course data cache: {e}")
+        return None
 
-    logging.info(f"Chunking completed: generated {len(result_chunks)} total chunks from {len(documents)} documents.")
-    return result_chunks
+def process_json_files(doc_folder: str) -> List[Document]:
+    """Process JSON files with special handling for course data."""
+    json_files = [os.path.join(doc_folder, fn) for fn in os.listdir(doc_folder)
+                 if fn.lower().endswith('.json')]
+    
+    if not json_files:
+        logging.info("No JSON files found in documents folder")
+        return []
+    
+    logging.info(f"Found {len(json_files)} JSON files to process")
+    all_json_docs = []
+    
+    # Process each JSON file separately
+    for json_file in json_files:
+        filename = os.path.basename(json_file)
+        cache_name = os.path.splitext(filename)[0] + "_cache.json"
+        
+        # Check if file has been modified since last cached
+        cache_outdated = True
+        cache_dir = os.path.join(BASE_DIR, "json_cache")
+        cache_path = os.path.join(cache_dir, cache_name)
+        
+        if os.path.exists(cache_path):
+            json_mtime = os.path.getmtime(json_file)
+            cache_mtime = os.path.getmtime(cache_path)
+            if json_mtime <= cache_mtime:
+                cache_outdated = False
+        
+        if not cache_outdated:
+            # Load from cache if not outdated
+            cached_docs = load_json_docs_from_cache(cache_dir=cache_dir, cache_name=cache_name)
+            if cached_docs:
+                logging.info(f"Using cached data for {filename}")
+                all_json_docs.extend(cached_docs)
+                continue
+        
+        # Process the file
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                json_data = json.load(f)
+            
+            # Handle different JSON structures
+            if not isinstance(json_data, list):
+                if isinstance(json_data, dict):
+                    # It might be a single object or have a wrapper
+                    if "courses" in json_data and isinstance(json_data["courses"], list):
+                        json_data = json_data["courses"]
+                    else:
+                        json_data = [json_data]  # Convert single object to list
+                else:
+                    logging.warning(f"Unsupported JSON structure in {filename}, skipping")
+                    continue
+            
+            # Detect if it's course data by checking fields
+            is_course_data = False
+            if len(json_data) > 0 and isinstance(json_data[0], dict):
+                course_keys = ["courseNumber", "subject", "courseTitle"]
+                if all(key in json_data[0] for key in course_keys):
+                    is_course_data = True
+            
+            if is_course_data:
+                docs = create_documents_from_course_data(json_data)
+                # Update source_file to actual filename
+                for doc in docs:
+                    doc.metadata["source_file"] = filename
+            else:
+                # Generic JSON handling
+                logging.info(f"Processing generic JSON data from {filename}")
+                docs = []
+                for i, item in enumerate(json_data):
+                    if isinstance(item, dict):
+                        # Create a simple text representation
+                        content = json.dumps(item, indent=2)
+                        docs.append(Document(
+                            page_content=content,
+                            metadata={"source_file": filename, "index": i, "format": "json"}
+                        ))
+            
+            if docs:
+                # Cache the results
+                save_json_docs_to_cache(docs, cache_dir=cache_dir, cache_name=cache_name)
+                all_json_docs.extend(docs)
+                logging.info(f"Processed {len(docs)} items from {filename}")
+            
+        except Exception as e:
+            logging.error(f"Error processing JSON file {filename}: {e}")
+    
+    logging.info(f"Total of {len(all_json_docs)} documents created from JSON files")
+    return all_json_docs
 
+# Modify this function to include .json files
+def get_docs_folder_state(doc_folder: str) -> Dict[str, float]:
+    state = {}
+    for filename in os.listdir(doc_folder):
+        if filename.lower().endswith(('.pdf', '.txt', '.json')):  # Added .json
+            full_path = os.path.join(doc_folder, filename)
+            state[filename] = os.path.getmtime(full_path)
+    return state
+
+# Modify load_and_clean_documents to include JSON processing
+def load_and_clean_documents(doc_folder: str) -> List[Document]:
+    """Load and clean documents including JSON files."""
+    start_time = time.perf_counter()
+    heading_regex = re.compile(r"^(?:[A-Z0-9 .-]+)$")
+    documents = []
+    pdf_cache = load_pdf_cache()
+    
+    # Get list of PDF and text files
+    pdf_files = [os.path.join(doc_folder, fn) for fn in os.listdir(doc_folder) 
+                if fn.lower().endswith('.pdf')]
+    txt_files = [os.path.join(doc_folder, fn) for fn in os.listdir(doc_folder) 
+                if fn.lower().endswith('.txt')]
+    
+    # Process PDF and TXT files as before
+    # [Your existing PDF and TXT processing code stays here]
+    
+    # ADD THIS: Process JSON files
+    json_docs = process_json_files(doc_folder)
+    documents.extend(json_docs)
+    
+    # [Rest of your existing function stays unchanged]
+    
+    end_time = time.perf_counter()
+    logging.info(f"Document loading and cleaning took {end_time - start_time:.2f} seconds. Loaded {len(documents)} documents.")
+    return documents
 
 def load_existing_qdrant_store(
     collection_name: str = "my_collection",
@@ -792,33 +1060,27 @@ def load_existing_qdrant_store(
                 raise
 
 # Make the same changes to initialize_documents_and_vector_store
-def initialize_documents_and_vector_store(doc_folder: str = "./docs",
-                                         collection_name: str = "my_collection",
-                                         docs_cache_path: str = "docs_cache.joblib",
-                                         state_cache_path: str = "docs_state.json",
-                                         url: str = "http://localhost:6333"):
-    """
-    Initialize or update document store with optimized batching and vector operations.
-    """
+COURSE_COLLECTION_NAME = "courses_collection"
+def initialize_documents_and_vector_stores( # Renamed for clarity
+    doc_folder: str = "./docs",
+    general_collection_name: str = "my_collection",
+    course_collection_name: str = COURSE_COLLECTION_NAME, # Use the new constant
+    docs_cache_path: str = "docs_cache.joblib",
+    state_cache_path: str = "docs_state.json",
+    url: str = QDRANT_URL, # Use the defined URL
+    force_recreate: bool = False
+):
     init_start = time.perf_counter()
-    
-    # Larger batch size for faster vector insertion
     VECTOR_BATCH_SIZE = 250
-    
-    # 1. Initialize the dense embedding model with OS-specific device settings
+
     dense_embeddings = HuggingFaceEmbeddings(
         model_name="BAAI/bge-m3",
         model_kwargs={"trust_remote_code": True, "device": device},
-        encode_kwargs={'normalize_embeddings':True}
+        encode_kwargs={'normalize_embeddings': True}
     )
-    
-    # 2. Initialize the sparse embedding model
     sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25")
-    
-    # 3. Compute current state of docs folder
+
     current_state = get_docs_folder_state(doc_folder)
-    
-    # 4. Load previous state if available
     previous_state = {}
     if os.path.exists(state_cache_path):
         try:
@@ -827,179 +1089,167 @@ def initialize_documents_and_vector_store(doc_folder: str = "./docs",
         except Exception as e:
             logging.error(f"Error loading state cache: {e}")
     
-    # 5. Determine if reprocessing is needed
-    reprocess = (current_state != previous_state)
-    
-    # Use gRPC for better performance
+    reprocess = (current_state != previous_state) or force_recreate
+
+    # --- Qdrant Client Initialization (simplified for brevity, use your existing robust version) ---
     from qdrant_client import QdrantClient
-    
-    # Extract host from URL
     import re
     host_match = re.match(r'https?://([^:/]+)(?::\d+)?', url)
     grpc_host = host_match.group(1) if host_match else "localhost"
-    grpc_port = 6334  # Default gRPC port for Qdrant
-    
-    # Create client with gRPC preference
+    grpc_port = 6334
+
     try:
-        client = QdrantClient(
-            host=grpc_host,
-            port=grpc_port,
-            prefer_grpc=True,
-            timeout=5.0
-        )
-        collections = client.get_collections().collections
-        collection_exists = any(collection.name == collection_name for collection in collections)
+        client = QdrantClient(host=grpc_host, port=grpc_port, prefer_grpc=True, timeout=5.0)
         using_grpc = True
         logging.info("Successfully connected to Qdrant using gRPC")
-    except Exception as e:
-        logging.error(f"Error connecting to Qdrant via gRPC: {e}")
-        logging.warning(f"Falling back to HTTP connection")
-        client = QdrantClient(url=url)
+    except Exception as e_grpc:
+        logging.warning(f"Qdrant gRPC connection failed: {e_grpc}. Falling back to HTTP.")
+        client = QdrantClient(url=url, timeout=5.0) # Ensure timeout for HTTP too
+        using_grpc = False
+        logging.info("Successfully connected to Qdrant using HTTP")
+
+    def collection_exists(client, collection_name_to_check):
         try:
             collections = client.get_collections().collections
-            collection_exists = any(collection.name == collection_name for collection in collections)
-            using_grpc = False
-        except Exception as e2:
-            logging.error(f"Error connecting to Qdrant via HTTP: {e2}")
-            collection_exists = False
-            using_grpc = False
-    
-    if collection_exists and not reprocess:
-        logging.info("Persistent vector store found. Loading from Qdrant...")
-        
-        try:
-            # THE FIX: Add vector_name="default" parameter
-            if using_grpc:
-                vector_store = QdrantVectorStore.from_existing_collection(
-                    embedding=dense_embeddings,
-                    sparse_embedding=sparse_embeddings,
-                    collection_name=collection_name,
-                    host=grpc_host,
-                    port=grpc_port,
-                    prefer_grpc=True,
-                    retrieval_mode=RetrievalMode.HYBRID,
-                    vector_name="default"  # Add this parameter
-                )
-                logging.info("Successfully loaded Qdrant collection with hybrid search support via gRPC.")
-            else:
-                vector_store = QdrantVectorStore.from_existing_collection(
-                    embedding=dense_embeddings,
-                    sparse_embedding=sparse_embeddings,
-                    collection_name=collection_name,
-                    url=url,
-                    retrieval_mode=RetrievalMode.HYBRID,
-                    vector_name="default"  # Add this parameter
-                )
-                logging.info("Successfully loaded Qdrant collection with hybrid search support via HTTP.")
+            return any(c.name == collection_name_to_check for c in collections)
         except Exception as e:
-            if "does not contain sparse vectors" in str(e):
-                logging.warning(f"Collection exists but doesn't support hybrid search: {e}")
-                logging.info("Will recreate the collection with hybrid search support.")
-                collection_exists = False  # Force recreation
-            else:
-                raise  # If it's a different error, propagate it
-        
-        if collection_exists:  # If we successfully loaded the collection
-            if os.path.exists(docs_cache_path):
-                docs = joblib.load(docs_cache_path)
-                logging.info(f"Loaded {len(docs)} cached document chunks.")
-            else:
-                logging.warning("No document cache found. Rebuilding documents from source...")
-                documents = load_and_clean_documents(doc_folder)
-                logging.info(f"Loaded {len(documents)} documents.")
-                metadata_docs = create_documents_from_data(degree_programs_data)
-                documents.extend(metadata_docs)
-                
-                # Use our new unified chunker
-                docs =  improved_document_chunker(
-                            documents,
-                            min_chunk_size=500,  # Prevents tiny chunks
-                            chunk_size=1000,
-                            chunk_overlap=200
-                        )
-                joblib.dump(docs, docs_cache_path)
-    
-    # If collection doesn't exist, needs to be recreated for hybrid search, or documents have changed
-    if not collection_exists or reprocess:
-        logging.info("Loading and cleaning documents...")
-        documents = load_and_clean_documents(doc_folder)
-        logging.info(f"Loaded {len(documents)} documents.")
-        metadata_docs = create_documents_from_data(degree_programs_data)
-        documents.extend(metadata_docs)
-        
-        # Use our new unified chunker
-        docs =  improved_document_chunker(
-                    documents,
-                    min_chunk_size=500,  # Prevents tiny chunks
-                    chunk_size=1000,
-                    chunk_overlap=200
-                )
-        # Convert to LangChain documents format
-        langchain_docs = convert_to_langchain_docs(docs)
-        
-        # Create new vector store using the preferred connection method
-        logging.info(f"Building new vector store using QdrantVectorStore with hybrid search capability and batch size {VECTOR_BATCH_SIZE}...")
-        try:
-            # THE FIX: Add vector_name="default" parameter 
-            if using_grpc:
-                vector_store = QdrantVectorStore.from_documents(
-                    langchain_docs,
-                    embedding=dense_embeddings,
-                    sparse_embedding=sparse_embeddings,
-                    host=grpc_host,
-                    port=grpc_port,
-                    prefer_grpc=True,
-                    collection_name=collection_name,
-                    force_recreate=True,
-                    retrieval_mode=RetrievalMode.HYBRID,
-                    batch_size=VECTOR_BATCH_SIZE,
-                    vector_name="default"  # Add this parameter
-                )
-                logging.info("Successfully created vector store via gRPC.")
-            else:
-                vector_store = QdrantVectorStore.from_documents(
-                    langchain_docs,
-                    embedding=dense_embeddings,
-                    sparse_embedding=sparse_embeddings,
-                    url=url,
-                    collection_name=collection_name,
-                    force_recreate=True,
-                    retrieval_mode=RetrievalMode.HYBRID,
-                    batch_size=VECTOR_BATCH_SIZE,
-                    vector_name="default"  # Add this parameter
-                )
-                logging.info("Successfully created vector store via HTTP.")
-        except Exception as e:
-            logging.error(f"Error creating vector store: {e}")
-            # If gRPC failed, try HTTP as a fallback
-            if using_grpc:
-                logging.warning("Falling back to HTTP for vector store creation")
-                vector_store = QdrantVectorStore.from_documents(
-                    langchain_docs,
-                    embedding=dense_embeddings,
-                    sparse_embedding=sparse_embeddings,
-                    url=url,
-                    collection_name=collection_name,
-                    force_recreate=True,
-                    retrieval_mode=RetrievalMode.HYBRID,
-                    batch_size=VECTOR_BATCH_SIZE,
-                    vector_name="default"  # Add this parameter
-                )
-                logging.info("Successfully created vector store via HTTP fallback.")
-            else:
-                raise
+            logging.error(f"Error checking if collection {collection_name_to_check} exists: {e}")
+            return False # Assume not exists if error
 
-        joblib.dump(docs, docs_cache_path)
+    general_collection_exists = collection_exists(client, general_collection_name)
+    course_collection_exists = collection_exists(client, course_collection_name)
+
+    # --- Determine if full document processing is needed ---
+    all_processed_docs: List[Document] # Custom Document objects
+    if reprocess or not os.path.exists(docs_cache_path) or not general_collection_exists or not course_collection_exists:
+        logging.info("Reprocessing documents or collection(s) missing/forcing recreate.")
+        raw_documents = load_and_clean_documents(doc_folder) # This loads all, including JSON courses
+        logging.info(f"Loaded {len(raw_documents)} raw documents.")
+        
+        metadata_docs = create_documents_from_data(degree_programs_data) # Degree programs
+        raw_documents.extend(metadata_docs)
+
+        # Separate course documents from other documents (USING YOUR CUSTOM Document class)
+        course_custom_docs = [doc for doc in raw_documents if doc.metadata.get("doc_type") == "course_description"]
+        other_custom_docs = [doc for doc in raw_documents if doc.metadata.get("doc_type") != "course_description"]
+
+        logging.info(f"Found {len(course_custom_docs)} course documents.")
+        logging.info(f"Found {len(other_custom_docs)} other documents to be chunked.")
+
+        # Chunk non-course documents
+        chunked_other_docs = improved_document_chunker(
+            other_custom_docs,
+            min_chunk_size=500,
+            chunk_size=1000,
+            chunk_overlap=200
+        )
+        
+        # Combine chunked general documents. Course documents remain unchunked.
+        all_processed_docs = chunked_other_docs + course_custom_docs # List of custom Document objects
+        logging.info(f"Total processed document units: {len(all_processed_docs)}")
+        joblib.dump(all_processed_docs, docs_cache_path)
+    else:
+        logging.info("Loading documents from joblib cache.")
+        all_processed_docs = joblib.load(docs_cache_path)
+
+    # --- Convert to LangChain Documents and Prepare for Vector Stores ---
+    # We need to split them based on doc_type *before* creating LangChain documents for different stores
     
+    final_general_lc_docs: List[LangchainDocument] = []
+    final_course_lc_docs: List[LangchainDocument] = []
+
+    for doc_custom in all_processed_docs: # Iterate through custom Document objects
+        lc_doc = LangchainDocument(page_content=doc_custom.page_content, metadata=doc_custom.metadata)
+        if doc_custom.metadata.get("doc_type") == "course_description":
+            final_course_lc_docs.append(lc_doc)
+        else:
+            final_general_lc_docs.append(lc_doc)
+            
+    logging.info(f"Prepared {len(final_general_lc_docs)} LangChain docs for general collection.")
+    logging.info(f"Prepared {len(final_course_lc_docs)} LangChain docs for course collection.")
+
+    # --- Initialize/Update General Document Vector Store ---
+    general_vector_store = None
+    if not general_collection_exists or reprocess: # Or if relevant part of docs changed
+        logging.info(f"Building new general vector store '{general_collection_name}'...")
+        if using_grpc:
+            general_vector_store = QdrantVectorStore.from_documents(
+                final_general_lc_docs, dense_embeddings, sparse_embedding=sparse_embeddings,
+                host=grpc_host, port=grpc_port, prefer_grpc=True,
+                collection_name=general_collection_name, force_recreate=True, # force_recreate might need finer control
+                retrieval_mode=RetrievalMode.HYBRID, batch_size=VECTOR_BATCH_SIZE, vector_name="default"
+            )
+        else:
+            general_vector_store = QdrantVectorStore.from_documents(
+                final_general_lc_docs, dense_embeddings, sparse_embedding=sparse_embeddings,
+                url=url, collection_name=general_collection_name, force_recreate=True,
+                retrieval_mode=RetrievalMode.HYBRID, batch_size=VECTOR_BATCH_SIZE, vector_name="default"
+            )
+        logging.info(f"General vector store '{general_collection_name}' created/updated.")
+    else:
+        logging.info(f"Loading existing general vector store '{general_collection_name}'...")
+        if using_grpc:
+            general_vector_store = QdrantVectorStore.from_existing_collection(
+                dense_embeddings, sparse_embedding=sparse_embeddings,
+                host=grpc_host, port=grpc_port, prefer_grpc=True,
+                collection_name=general_collection_name, retrieval_mode=RetrievalMode.HYBRID, vector_name="default"
+            )
+        else:
+            general_vector_store = QdrantVectorStore.from_existing_collection(
+                dense_embeddings, sparse_embedding=sparse_embeddings, url=url,
+                collection_name=general_collection_name, retrieval_mode=RetrievalMode.HYBRID, vector_name="default"
+            )
+        logging.info(f"General vector store '{general_collection_name}' loaded.")
+
+    # --- Initialize/Update Course Document Vector Store ---
+    course_vector_store = None
+    if not course_collection_exists or reprocess: # Or if course docs changed
+        logging.info(f"Building new course vector store '{course_collection_name}'...")
+        if using_grpc:
+            course_vector_store = QdrantVectorStore.from_documents(
+                final_course_lc_docs, dense_embeddings, sparse_embedding=sparse_embeddings,
+                host=grpc_host, port=grpc_port, prefer_grpc=True,
+                collection_name=course_collection_name, force_recreate=True,
+                retrieval_mode=RetrievalMode.HYBRID, batch_size=VECTOR_BATCH_SIZE, vector_name="default"
+            )
+        else:
+            course_vector_store = QdrantVectorStore.from_documents(
+                final_course_lc_docs, dense_embeddings, sparse_embedding=sparse_embeddings,
+                url=url, collection_name=course_collection_name, force_recreate=True,
+                retrieval_mode=RetrievalMode.HYBRID, batch_size=VECTOR_BATCH_SIZE, vector_name="default"
+            )
+        logging.info(f"Course vector store '{course_collection_name}' created/updated.")
+    else:
+        logging.info(f"Loading existing course vector store '{course_collection_name}'...")
+        if using_grpc:
+            course_vector_store = QdrantVectorStore.from_existing_collection(
+                dense_embeddings, sparse_embedding=sparse_embeddings,
+                host=grpc_host, port=grpc_port, prefer_grpc=True,
+                collection_name=course_collection_name, retrieval_mode=RetrievalMode.HYBRID, vector_name="default"
+            )
+        else:
+            course_vector_store = QdrantVectorStore.from_existing_collection(
+                dense_embeddings, sparse_embedding=sparse_embeddings, url=url,
+                collection_name=course_collection_name, retrieval_mode=RetrievalMode.HYBRID, vector_name="default"
+            )
+        logging.info(f"Course vector store '{course_collection_name}' loaded.")
+        
     try:
         with open(state_cache_path, "w") as f:
             json.dump(current_state, f)
     except Exception as e:
         logging.error(f"Error saving state cache: {e}")
-    
+
     init_end = time.perf_counter()
-    logging.info(f"Initialization took {init_end - init_start:.2f} seconds")
-    return docs, vector_store, dense_embeddings, sparse_embeddings
+    logging.info(f"Initialization of vector stores took {init_end - init_start:.2f} seconds")
+    
+    # Return all processed custom Document objects, and both vector stores
+    return all_processed_docs, general_vector_store, course_vector_store, dense_embeddings, sparse_embeddings
+
+
+
+PERSIST_COLLECTION = "my_main_collection"  # For general documents
+COURSE_COLLECTION_NAME = "courses_collection" # For course-specific documents
 
 if __name__ == "__main__":
     # Install required dependencies if not already installed
@@ -1008,7 +1258,7 @@ if __name__ == "__main__":
     except ImportError:
         import subprocess
         print("Installing required dependencies...")
-        subprocess.check_call(["pip", "install", "langchain-qdrant", "fastembeddings"])
+        subprocess.check_call(["pip", "install", "langchain-qdrant", "fastembed"]) # Corrected to fastembed
         print("Dependencies installed successfully.")
     
     try:
@@ -1022,29 +1272,84 @@ if __name__ == "__main__":
     # Check if Qdrant is available with gRPC
     from qdrant_client import QdrantClient
     try:
-        client = QdrantClient(host="localhost", port=6334, prefer_grpc=True, timeout=5.0)
+        # Ensure QDRANT_URL is defined, e.g., QDRANT_URL = "http://localhost:6333"
+        # Extract host for gRPC check
+        import re
+        host_match = re.match(r'https?://([^:/]+)(?::\d+)?', QDRANT_URL)
+        grpc_host = host_match.group(1) if host_match else "localhost"
+        
+        client = QdrantClient(host=grpc_host, port=6334, prefer_grpc=True, timeout=5.0)
         client.get_collections()
         print("Successfully connected to Qdrant using gRPC!")
     except Exception as e:
         print(f"Could not connect to Qdrant using gRPC: {e}")
         print("Will try HTTP instead. For better performance, ensure Qdrant server has gRPC enabled (port 6334).")
     
-    # Initialize or load documents and vector store
-    docs, vector_store, dense_embeddings, sparse_embeddings = initialize_documents_and_vector_store(
+    # Initialize or load documents and BOTH vector stores
+    # The function should now be the one that handles two collections
+    # Make sure the paths in DOC_FOLDER, etc., are correctly defined in your script
+    
+    # Assuming initialize_documents_and_vector_stores is the updated function:
+    all_processed_docs, general_vector_store, course_vector_store, dense_embeddings, sparse_embeddings = initialize_documents_and_vector_stores(
         doc_folder=DOC_FOLDER,
-        collection_name=PERSIST_COLLECTION,
-        url=QDRANT_URL,
+        general_collection_name=PERSIST_COLLECTION, # Your main collection name
+        course_collection_name=COURSE_COLLECTION_NAME,   # Your new course collection name
+        docs_cache_path=DOCS_CACHE_PATH, # Ensure this is defined
+        state_cache_path=STATE_CACHE_PATH, # Ensure this is defined
+        url=QDRANT_URL
     )
     
-    # Run a quick test search to verify everything is working
-    query = "What are the computer science degree programs?"
-    results = vector_store.similarity_search_with_score(query, k=3)
-    
-    print("\n=== Sample Search Results ===")
-    for doc, score in results:
-        print(f"Score: {score:.4f}")
-        print(f"Content: {doc.page_content[:150]}...")
-        print(f"Metadata: {doc.metadata}")
-        print("-" * 50)
+    print(f"\n--- Initialization Summary ---")
+    print(f"Total processed custom Document objects: {len(all_processed_docs)}")
+    if general_vector_store:
+        print(f"General Vector Store (collection: '{general_vector_store.collection_name}') Initialized/Loaded.")
+    else:
+        print(f"General Vector Store FAILED to initialize.")
+        
+    if course_vector_store:
+        print(f"Course Vector Store (collection: '{course_vector_store.collection_name}') Initialized/Loaded.")
+    else:
+        print(f"Course Vector Store FAILED to initialize.")
+    print(f"Dense Embeddings: {'Initialized' if dense_embeddings else 'Not Initialized'}")
+    print(f"Sparse Embeddings: {'Initialized' if sparse_embeddings else 'Not Initialized'}")
+    print("-" * 30)
 
-    print("\nIngestion and search testing completed successfully.")
+    # Run a quick test search on the general vector store
+    if general_vector_store:
+        print("\n=== Sample Search Results (General Documents) ===")
+        query_general = "What are the computer science degree programs?"
+        try:
+            results_general = general_vector_store.similarity_search_with_score(query_general, k=2)
+            if results_general:
+                for doc, score in results_general:
+                    print(f"Score: {score:.4f}")
+                    print(f"Content: {doc.page_content[:150]}...")
+                    print(f"Metadata: {doc.metadata}")
+                    print("-" * 50)
+            else:
+                print("No results found for the general query.")
+        except Exception as e:
+            print(f"Error during general search test: {e}")
+    else:
+        print("\nSkipping general documents search test as general_vector_store is not available.")
+
+    # Run a quick test search on the course vector store
+    if course_vector_store:
+        print("\n=== Sample Search Results (Course Documents) ===")
+        query_course = "prerequisites for COMP1127" # Example course query
+        try:
+            results_course = course_vector_store.similarity_search_with_score(query_course, k=2)
+            if results_course:
+                for doc, score in results_course:
+                    print(f"Score: {score:.4f}")
+                    print(f"Content: {doc.page_content[:250]}...") # Show a bit more for course details
+                    print(f"Metadata: {doc.metadata}")
+                    print("-" * 50)
+            else:
+                print("No results found for the course query.")
+        except Exception as e:
+            print(f"Error during course search test: {e}")
+    else:
+        print("\nSkipping course documents search test as course_vector_store is not available.")
+
+    print("\nIngestion and search testing completed.")

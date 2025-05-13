@@ -470,6 +470,11 @@ async def get_course_grades_by_term(db: AsyncSession, user_id: int, term_id: int
 
 
 async def create_bulk_availability_slots(db: AsyncSession, data: SlotBulkCreate):
+    # Ensure admin_id is set (should be set from the token by the route handler)
+    if not data.admin_id:
+        raise HTTPException(status_code=400, detail="Admin ID is required")
+    
+    # Check if admin exists
     result = await db.execute(select(Admin).where(Admin.id == data.admin_id))
     admin = result.scalars().first()
 

@@ -1,7 +1,7 @@
 from datetime import datetime
 from pydantic import BaseModel, EmailStr
 from typing import Optional
-
+from typing import List
 
 class UserCreate(BaseModel):
     firstname: str
@@ -206,18 +206,18 @@ class AdminTokenOut(BaseModel):
 #         from_attributes = True
 
 
-class SlotSummary(BaseModel):
+class SlotCreate(BaseModel):
     start_time: datetime
     end_time: datetime
 
 
 class SlotBulkCreate(BaseModel):
-    admin_id: int
-    slots: list[SlotSummary]
-
+    # Make admin_id optional since it will be set from the authenticated token
+    admin_id: Optional[int] = None
+    slots: List[SlotCreate]
+    
     class Config:
         from_attributes = True
-
 
 class SlotOut(BaseModel):
     id: int

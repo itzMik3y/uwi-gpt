@@ -26,12 +26,13 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { motion, AnimatePresence } from "framer-motion"
-import { useChat } from "@/app/hooks/useChat"
+import { useChat } from "@/app/hooks/useChat" // This hook is updated
 import { useSelector, useDispatch } from "react-redux"
 import { RootState } from "@/store"
 import ReactMarkdown from "react-markdown"
 import { addBotMessage } from "@/store/slices/chatSlice"
 import { Layout } from "../components/layout/Layout"
+import { Message } from "@/types/rag"; // Ensure Message type is imported if used directly
 
 // Define interface for nav items and quick action items
 interface NavItem {
@@ -45,7 +46,7 @@ interface NavItem {
 // Chat message animation variants
 const chatItemVariants = {
   hidden: { opacity: 0, y: 20 },
-  visible: (i) => ({
+  visible: (i: number) => ({ // Added type for i
     opacity: 1,
     y: 0,
     transition: {
@@ -75,7 +76,7 @@ const MessageContent = ({
   };
   
   return (
-    <div className="prose max-w-none text-gray-800">
+    <div className="prose max-w-none text-gray-800 dark:text-gray-200">
       {isHtmlContent(content) ? (
         <div dangerouslySetInnerHTML={{ __html: content }} />
       ) : (
@@ -85,9 +86,9 @@ const MessageContent = ({
       )}
       {isStreaming && (
         <div className="inline-flex space-x-1 mt-1">
-          <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '0ms' }}></div>
-          <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '200ms' }}></div>
-          <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500" style={{ animationDelay: '400ms' }}></div>
+          <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500 dark:bg-gray-400" style={{ animationDelay: '0ms' }}></div>
+          <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500 dark:bg-gray-400" style={{ animationDelay: '200ms' }}></div>
+          <div className="h-2 w-2 animate-bounce rounded-full bg-gray-500 dark:bg-gray-400" style={{ animationDelay: '400ms' }}></div>
         </div>
       )}
     </div>
@@ -125,7 +126,7 @@ export default function ChatPage() {
     error, 
     inputMessage, 
     setInputMessage, 
-    sendMessage,
+    sendMessage, // This now sends history implicitly via useChat
     useStreaming,
     toggleStreaming
   } = useChat();
@@ -157,42 +158,42 @@ export default function ChatPage() {
 
   
   // Auto-scroll to bottom when new messages arrive or during streaming
-  // But only scroll the chat container, not the whole page
   useEffect(() => {
     if (messagesEndRef.current && chatContainerRef.current) {
-      // Use scrollIntoView only within the container, not the whole page
       chatContainerRef.current.scrollTo({
         top: chatContainerRef.current.scrollHeight,
         behavior: 'smooth'
       });
     }
-  }, [messages, isStreaming]);
+  }, [messages, isStreaming]); // isStreaming will trigger scroll on new chunks
   
   // Ensure the chat container is properly sized based on viewport
   useEffect(() => {
     const resizeChat = () => {
       if (chatContainerRef.current) {
         const viewportHeight = window.innerHeight;
-        const infoSectionHeight = infoSectionCollapsed ? 0 : 180; // Approximate height of info section
-        const inputSectionHeight = 80; // Approximate height of input section
-        const headerHeight = 120; // Estimated header height (adjust as needed)
+        // Approximate heights - adjust these values based on your actual layout
+        const headerHeight = document.querySelector('header')?.offsetHeight || 70; // Dynamically get header height or fallback
+        const inputSection = document.getElementById('chat-input-section');
+        const inputSectionHeight = inputSection?.offsetHeight || 80; 
+        const infoSection = document.getElementById('info-section-collapsible');
+        const infoSectionHeight = !infoSectionCollapsed && infoSection ? infoSection.offsetHeight : 0;
         
         // Calculate available height for chat container
-        const availableHeight = viewportHeight - headerHeight - inputSectionHeight - infoSectionHeight;
+        // Subtract a small buffer for padding/margins if needed
+        const buffer = 20; 
+        const availableHeight = viewportHeight - headerHeight - inputSectionHeight - infoSectionHeight - buffer;
         
-        // Set min-height to ensure it doesn't get too small
+        // Set min-height to ensure it doesn't get too small, and max-height for overall layout
         chatContainerRef.current.style.height = `${Math.max(300, availableHeight)}px`;
       }
     };
     
-    // Initial sizing
-    resizeChat();
-    
-    // Resize on window resize
+    resizeChat(); // Initial call
     window.addEventListener('resize', resizeChat);
     
-    // Resize when info section collapses/expands
-    const resizeTimeout = setTimeout(resizeChat, 350); // After animation completes
+    // Resize when info section collapses/expands, wait for animation
+    const resizeTimeout = setTimeout(resizeChat, 350); 
     
     return () => {
       window.removeEventListener('resize', resizeChat);
@@ -204,8 +205,7 @@ export default function ChatPage() {
   const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      // Prevent scrolling by stopping event propagation
-      e.stopPropagation();
+      e.stopPropagation(); // Important to prevent other handlers if any
       sendMessage();
     }
   };
@@ -215,30 +215,31 @@ export default function ChatPage() {
     { 
       label: "Courses", 
       icon: <BookOpen className="h-4 w-4" />, 
-      bgColor: "bg-blue-100",
-      textColor: "text-blue-700",
-      hoverColor: "hover:bg-blue-200"
+      bgColor: "bg-blue-100 dark:bg-blue-800",
+      textColor: "text-blue-700 dark:text-blue-200",
+      hoverColor: "hover:bg-blue-200 dark:hover:bg-blue-700"
     },
-    { 
+    // ... other actions with dark mode classes
+     { 
       label: "Grades", 
       icon: <GraduationCap className="h-4 w-4" />, 
-      bgColor: "bg-purple-100",
-      textColor: "text-purple-700",
-      hoverColor: "hover:bg-purple-200"
+      bgColor: "bg-purple-100 dark:bg-purple-800",
+      textColor: "text-purple-700 dark:text-purple-200",
+      hoverColor: "hover:bg-purple-200 dark:hover:bg-purple-700"
     },
     { 
       label: "Schedule", 
       icon: <Calendar className="h-4 w-4" />, 
-      bgColor: "bg-green-100",
-      textColor: "text-green-700",
-      hoverColor: "hover:bg-green-200"
+      bgColor: "bg-green-100 dark:bg-green-800",
+      textColor: "text-green-700 dark:text-green-200",
+      hoverColor: "hover:bg-green-200 dark:hover:bg-green-700"
     },
     { 
       label: "Help", 
       icon: <HelpCircle className="h-4 w-4" />, 
-      bgColor: "bg-amber-100",
-      textColor: "text-amber-700",
-      hoverColor: "hover:bg-amber-200"
+      bgColor: "bg-amber-100 dark:bg-amber-800",
+      textColor: "text-amber-700 dark:text-amber-200",
+      hoverColor: "hover:bg-amber-200 dark:hover:bg-amber-700"
     },
   ]
   
@@ -249,6 +250,7 @@ export default function ChatPage() {
       time: "2h ago",
       active: true
     },
+    // ... other chats
     { 
       title: "GPA Calculator", 
       time: "Yesterday",
@@ -272,16 +274,14 @@ export default function ChatPage() {
     setInfoSectionCollapsed(!infoSectionCollapsed)
   }
 
-  // Add global CSS to hide scrollbars
+  // Global CSS to hide scrollbars (optional, consider accessibility)
   useEffect(() => {
-    // Add CSS to hide scrollbars globally
     const style = document.createElement('style');
     style.textContent = `
       /* Hide scrollbar for Chrome, Safari and Opera */
       ::-webkit-scrollbar {
         display: none;
       }
-      
       /* Hide scrollbar for IE, Edge and Firefox */
       * {
         -ms-overflow-style: none;  /* IE and Edge */
@@ -289,18 +289,16 @@ export default function ChatPage() {
       }
     `;
     document.head.appendChild(style);
-    
-    // Cleanup function
     return () => {
       document.head.removeChild(style);
     };
   }, []);
   
   return (
-    <Layout>
-    <div className="container mx-auto py-4 px-2">
+    <Layout> {/* Assuming Layout handles overall page structure including header */}
+    <div className="container mx-auto py-4 px-2 h-[calc(100vh-var(--header-height,70px))] flex flex-col">
       {/* Main Chat Area with Border and Shadow */}
-      <div className="bg-white rounded-lg shadow-sm flex flex-col h-[calc(100vh-120px)] max-h-[calc(100vh-120px)] overflow-hidden">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm flex flex-col flex-grow overflow-hidden">
         {/* Chat messages - This div scrolls */}
         <div 
           ref={chatContainerRef}
@@ -313,7 +311,6 @@ export default function ChatPage() {
         >
           <div className="space-y-4 min-h-full">
             {messages.map((msg, index) => {
-              // Determine if this is the last bot message and is currently streaming
               const isLastBotMessage = msg.sender === 'bot' && index === messages.length - 1;
               const isCurrentlyStreaming = isLastBotMessage && isStreaming;
               
@@ -334,10 +331,10 @@ export default function ChatPage() {
                           alt="UWI-GPT" 
                           width={32} 
                           height={32} 
-                          className="w-8 h-8"
+                          className="w-8 h-8 rounded-full" // Added rounded-full
                         />
                       </div>
-                      <div className="bg-blue-50 text-gray-800 rounded-2xl rounded-tl-none p-4 max-w-[70%]">
+                      <div className="bg-blue-50 dark:bg-blue-900 text-gray-800 dark:text-gray-100 rounded-2xl rounded-tl-none p-4 max-w-[70%] shadow">
                         <MessageContent 
                           content={msg.content} 
                           sender={msg.sender} 
@@ -347,7 +344,7 @@ export default function ChatPage() {
                     </>
                   ) : (
                     <>
-                      <div className="bg-gray-100 text-gray-800 rounded-2xl rounded-tr-none p-4 max-w-[70%]">
+                      <div className="bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-100 rounded-2xl rounded-tr-none p-4 max-w-[70%] shadow">
                         <MessageContent 
                           content={msg.content} 
                           sender={msg.sender}
@@ -355,7 +352,7 @@ export default function ChatPage() {
                       </div>
                       <div className="flex-shrink-0 ml-2">
                         <Avatar className="w-8 h-8">
-                          <AvatarImage src="/avatar.png" alt={fullName} />
+                          <AvatarImage src={user?.profileimageurl || "/avatar.png"} alt={fullName} />
                           <AvatarFallback>{userInitials}</AvatarFallback>
                         </Avatar>
                       </div>
@@ -364,8 +361,8 @@ export default function ChatPage() {
                 </motion.div>
               );
             })}
-                  
-            {/* Only show the typing indicator for non-streaming loading */}
+                
+            {/* Typing indicator for non-streaming loading */}
             {isLoading && !isStreaming && (
               <motion.div 
                 className="flex items-start space-x-2"
@@ -379,19 +376,19 @@ export default function ChatPage() {
                     alt="UWI-GPT" 
                     width={32} 
                     height={32} 
-                    className="w-8 h-8"
+                    className="w-8 h-8 rounded-full"
                   />
                 </div>
-                <div className="bg-gray-100 rounded-full px-4 py-2">
+                <div className="bg-gray-100 dark:bg-gray-700 rounded-full px-4 py-2 shadow">
                   <div className="flex space-x-1">
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: '0ms' }}></div>
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: '200ms' }}></div>
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: '400ms' }}></div>
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400 dark:bg-gray-500" style={{ animationDelay: '0ms' }}></div>
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400 dark:bg-gray-500" style={{ animationDelay: '200ms' }}></div>
+                    <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400 dark:bg-gray-500" style={{ animationDelay: '400ms' }}></div>
                   </div>
                 </div>
               </motion.div>
             )}
-                    
+                
             {/* Show error message if any */}
             {error && (
               <motion.div 
@@ -402,105 +399,112 @@ export default function ChatPage() {
               >
                 <div className="flex-shrink-0">
                   <div className="w-8 h-8 bg-red-600 rounded-full flex items-center justify-center">
-                    <User className="h-4 w-4 text-white" />
+                    <User className="h-4 w-4 text-white" /> {/* Changed to User, or use an Error icon */}
                   </div>
                 </div>
-                <div className="bg-red-50 text-red-700 rounded-2xl rounded-tl-none p-4">
+                <div className="bg-red-50 dark:bg-red-900 border border-red-200 dark:border-red-700 text-red-700 dark:text-red-200 rounded-2xl rounded-tl-none p-4 shadow">
                   <p className="font-medium">Error</p>
                   <p>{error}</p>
                 </div>
               </motion.div>
             )}
-                    
+                
             {/* Invisible element to scroll to */}
             <div ref={messagesEndRef} />
           </div>
         </div>
 
         {/* Bottom Panel with collapsible Info Section */}
-        <div className="border-t bg-gray-50 relative flex-shrink-0">
+        {/* Assign an ID for height calculation */}
+        <div id="chat-input-section" className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 relative flex-shrink-0">
           {/* Collapse/Expand button */}
           <div className="absolute left-1/2 -top-3 transform -translate-x-1/2 z-10">
             <Button 
               variant="ghost" 
               size="icon" 
-              className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-200 bg-white shadow-sm hover:bg-gray-100"
+              className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 shadow-sm hover:bg-gray-100 dark:hover:bg-gray-600 text-gray-500 dark:text-gray-400"
               onClick={toggleInfoSection}
               aria-label={infoSectionCollapsed ? "Expand info section" : "Collapse info section"}
             >
               <motion.div
-                animate={{ rotate: infoSectionCollapsed ? 90 : 270 }}
+                animate={{ rotate: infoSectionCollapsed ? 0 : 180 }} // Adjusted rotation for up/down arrow illusion
                 transition={{ 
-                  duration: 0.4, 
-                  ease: [0.4, 0.0, 0.2, 1] // Custom easing curve for smoother motion
+                  duration: 0.3, 
+                  ease: "easeInOut"
                 }}
               >
-                <ChevronRight className="h-4 w-4" />
+                <ChevronRight className={`h-4 w-4 transform ${infoSectionCollapsed ? 'rotate-90' : '-rotate-90'}`} />
               </motion.div>
             </Button>
           </div>
 
-          {/* Info Section (collapsible) */}
+          {/* Info Section (collapsible) - Assign an ID for height calculation */}
           <AnimatePresence>
             {!infoSectionCollapsed && (
               <motion.div 
-                className="grid grid-cols-3 gap-4 p-4 border-b w-full"
+                id="info-section-collapsible"
+                className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 border-b border-gray-200 dark:border-gray-700 w-full bg-gray-100 dark:bg-gray-750" // Slightly different bg
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
                 transition={{ 
-                  duration: 0.4, 
-                  ease: [0.4, 0.0, 0.2, 1]
+                  duration: 0.3, 
+                  ease: "easeInOut"
                 }}
               >
                 {/* Recent Chats */}
-                <div className="bg-white p-4 rounded-lg shadow-sm overflow-hidden">
-                  <h3 className="text-sm font-semibold mb-3 flex items-center">
-                    <Clock className="mr-2 h-4 w-4 text-blue-600" />
+                <div className="bg-white dark:bg-gray-800 p-3 rounded-lg shadow-sm overflow-hidden">
+                  <h3 className="text-sm font-semibold mb-2 flex items-center text-gray-700 dark:text-gray-300">
+                    <Clock className="mr-2 h-4 w-4 text-blue-600 dark:text-blue-400" />
                     Recent Chats
                   </h3>
-                  <div className="space-y-2 max-h-24 overflow-y-auto" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                  <div className="space-y-1.5 max-h-24 overflow-y-auto" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
                     {recentChats.map((chat, index) => (
                       <div 
                         key={index}
-                        className={`text-sm ${chat.active ? 'bg-blue-50' : 'bg-gray-100'} p-2 rounded cursor-pointer ${chat.active ? 'hover:bg-blue-100' : 'hover:bg-gray-200'}`}
+                        className={`text-xs p-2 rounded cursor-pointer ${chat.active ? 'bg-blue-50 dark:bg-blue-900 text-blue-700 dark:text-blue-200' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'} ${chat.active ? 'hover:bg-blue-100 dark:hover:bg-blue-800' : 'hover:bg-gray-200 dark:hover:bg-gray-600'}`}
                       >
-                        {chat.title} - {chat.time}
+                        {chat.title} - <span className="text-gray-500 dark:text-gray-400 text-xs">{chat.time}</span>
                       </div>
                     ))}
                   </div>
                 </div>
 
                 {/* Quick Actions */}
-                <div className="bg-white p-4 rounded-lg shadow-sm">
-                  <h3 className="text-sm font-semibold mb-3 flex items-center">
-                    <Zap className="mr-2 h-4 w-4 text-amber-500" />
+                <div className="bg-white dark:bg-gray-800 p-3 rounded-lg shadow-sm">
+                  <h3 className="text-sm font-semibold mb-2 flex items-center text-gray-700 dark:text-gray-300">
+                    <Zap className="mr-2 h-4 w-4 text-amber-500 dark:text-amber-400" />
                     Quick Actions
                   </h3>
                   <div className="grid grid-cols-2 gap-2">
                     {quickActions.map((action, index) => (
                       <button 
                         key={index}
-                        className={`text-sm px-3 py-2 ${action.bgColor} ${action.textColor} rounded-lg ${action.hoverColor} flex items-center justify-center`}
+                        className={`text-xs px-2 py-1.5 ${action.bgColor} ${action.textColor} rounded-md ${action.hoverColor} flex items-center justify-center transition-colors duration-150`}
                       >
                         {action.icon}
-                        <span className="ml-1">{action.label}</span>
+                        <span className="ml-1.5">{action.label}</span>
                       </button>
                     ))}
                   </div>
                 </div>
 
                 {/* Suggested Topics */}
-                <div className="bg-white p-4 rounded-lg shadow-sm overflow-hidden">
-                  <h3 className="text-sm font-semibold mb-3 flex items-center">
-                    <LightbulbIcon className="mr-2 h-4 w-4 text-yellow-500" />
+                <div className="bg-white dark:bg-gray-800 p-3 rounded-lg shadow-sm overflow-hidden">
+                  <h3 className="text-sm font-semibold mb-2 flex items-center text-gray-700 dark:text-gray-300">
+                    <LightbulbIcon className="mr-2 h-4 w-4 text-yellow-500 dark:text-yellow-400" />
                     Suggested Topics
                   </h3>
-                  <div className="space-y-2 max-h-24 overflow-y-auto" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                  <div className="space-y-1.5 max-h-24 overflow-y-auto" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
                     {suggestedTopics.map((topic, index) => (
                       <button 
                         key={index}
-                        className="w-full text-left text-sm px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+                        className="w-full text-left text-xs px-2 py-1.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-150"
+                        onClick={() => {
+                            setInputMessage(topic);
+                            // Optionally send message immediately: sendMessage(); 
+                            // but usually user confirms by pressing send.
+                        }}
                       >
                         {topic}
                       </button>
@@ -510,35 +514,35 @@ export default function ChatPage() {
               </motion.div>
             )}
           </AnimatePresence>
-            
+          
           {/* Message input - Fixed at bottom */}
           <div className="p-4 flex-shrink-0">
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-2 md:space-x-4">
               <div className="flex-1 relative">
                 <Input
                   value={inputMessage}
                   onChange={(e) => setInputMessage(e.target.value)}
                   onKeyDown={handleKeyPress}
                   placeholder="Type your question here..."
-                  className="w-full px-4 py-3 rounded-lg border focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400"
                   disabled={isLoading || isStreaming}
                 />
-                <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex items-center space-x-2">
-                  {/* Streaming toggle button */}
+                <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex items-center space-x-1">
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="text-gray-400 hover:text-gray-600 h-8 w-8 flex items-center justify-center"
+                    className="text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 h-8 w-8 flex items-center justify-center"
                     onClick={toggleStreaming}
                     title={useStreaming ? "Turn off streaming" : "Turn on streaming"}
                   >
-                    <Sparkles className={`h-5 w-5 ${useStreaming ? 'text-yellow-500' : 'text-gray-400'}`} />
+                    <Sparkles className={`h-5 w-5 ${useStreaming ? 'text-yellow-500 dark:text-yellow-400' : 'text-gray-400 dark:text-gray-500'}`} />
                   </Button>
                   
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="text-gray-400 hover:text-gray-600 h-8 w-8 flex items-center justify-center"
+                    className="text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 h-8 w-8 flex items-center justify-center"
+                    // Add onClick handler for paperclip if you implement file uploads
                   >
                     <Paperclip className="h-5 w-5" />
                   </Button>
@@ -546,12 +550,12 @@ export default function ChatPage() {
               </div>
               
               <Button
-                className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center"
+                className="px-4 py-3 md:px-6 bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white rounded-lg flex items-center font-medium"
                 onClick={sendMessage}
                 disabled={isLoading || isStreaming || !inputMessage.trim()}
               >
-                <Send className="mr-2 h-4 w-4" />
-                Send
+                <Send className="mr-0 md:mr-2 h-4 w-4" />
+                <span className="hidden md:inline">Send</span>
               </Button>
             </div>
           </div>

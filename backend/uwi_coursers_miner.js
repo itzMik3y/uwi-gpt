@@ -4,7 +4,7 @@
 // Array to store all collected course data
 let allCourseData = [];
 let pageCounter = 1;
-const MAX_TEST_PAGES = 5; // Change this to collect more pages
+const MAX_TEST_PAGES = 126; // Change this to collect more pages
 let dataCapturePending = false;
 
 // Set up a flag to track if we've captured data for the current page

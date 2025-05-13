@@ -374,11 +374,13 @@ minor_schema_math = {
             "allowed_levels": [2, 3],
             "allowed_prefixes": [],    # We use specific courses instead
             "excluded_courses": [],    # None specified in the image
-            "allowed_courses": [       # Specific list of allowed electives from image
+            "allowed_courses": [
                 "MATH2403", "MATH2404", "MATH2407", "MATH2411", "MATH2420",
                 "MATH2421", "MATH2431", "MATH2702", "STAT2001", "MATH3401",
-                "MATH3402", "MATH3403", "MATH3404", "MATH3411", "MATH3414",
-                "MATH3421", "MATH3422", "MATH3424", "STAT3001", "STAT3002"
+                "MATH3402", "MATH3411", "MATH3414", # MATH3403 & MATH3404 removed
+                "MATH3421", "MATH3422", "MATH3424",
+                "MATH3425", "MATH3426", # MATH3425 & MATH3426 added
+                "STAT3001", "STAT3002"
             ]
         },
         "notes": [ # General notes for the minor

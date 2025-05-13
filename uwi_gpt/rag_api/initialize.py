@@ -6,14 +6,16 @@ rag_api/initialize.py - Module for initializing and managing RAG components
 import os
 import time
 import logging
-from typing import Optional, Tuple, Dict
+import json
+from typing import Optional, Tuple, Dict, List, Any
 
 # Import custom LLM classes and other components
 from langchain.llms.base import LLM
 from langchain_qdrant import QdrantVectorStore, RetrievalMode
 from langchain.schema import BaseRetriever
 from sentence_transformers import CrossEncoder
-from dotenv import load_dotenv 
+from dotenv import load_dotenv
+
 # Global variables to store initialized components
 docs = None
 vector_store = None
@@ -25,8 +27,14 @@ llm = None
 selected_llm_backend = "ollama"  # Default LLM backend
 cross_encoder = None
 
+# New global variables for course data
+course_docs = None
+course_vector_store = None
+dual_retriever = None
+
 logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # --------------------------------------------------------------------------
 # Resource Initialization
 # --------------------------------------------------------------------------
@@ -39,6 +47,7 @@ def initialize_rag_resources():
     load_dotenv() 
     global docs, vector_store, dense_embeddings, sparse_embeddings, ensemble_retriever
     global hybrid_retriever, llm, cross_encoder, selected_llm_backend
+    global course_docs, course_vector_store, dual_retriever
     
     startup_start = time.perf_counter()
     
@@ -109,12 +118,6 @@ def initialize_rag_resources():
         use_lemmatization=True  # Enable lemmatization for better matching
     )
     
-    # MMR retriever for diversifying results with reduced k
-    # mmr_retriever = vector_store.as_retriever(
-    #     search_type="mmr", 
-    #     search_kwargs={"k": 15, "fetch_k": 20, "lambda_mult": 0.5}
-    # )
-    
     # Hybrid retriever that combines dense and sparse embeddings
     vector_store.retrieval_mode = RetrievalMode.HYBRID
     hybrid_retriever = vector_store.as_retriever(search_kwargs={"k": 20})
@@ -126,6 +129,48 @@ def initialize_rag_resources():
         bm25_retriever=bm25_retriever
     )
     
+    # Initialize the course vector store
+    course_init_start = time.perf_counter()
+    try:
+        from .ingestion import initialize_course_vector_store
+        course_docs, course_vector_store = initialize_course_vector_store(
+            course_data_dir=os.path.join(BASE_DIR, "rag_api", "course_data"),
+            collection_name="course_collection",
+            course_cache_path=os.path.join(BASE_DIR, "rag_api", "course_cache.joblib"),
+            state_cache_path=os.path.join(BASE_DIR, "rag_api", "course_state.json"),
+            url=os.environ.get("QDRANT_URL", "http://localhost:6333")
+        )
+        course_init_end = time.perf_counter()
+        if course_vector_store:
+            logger.info(f"Successfully initialized course vector store with {len(course_docs) if course_docs else 0} documents in {course_init_end - course_init_start:.2f} seconds")
+        else:
+            logger.warning("Course vector store initialization returned None. Using only primary retriever.")
+    except Exception as e:
+        logger.error(f"Error initializing course vector store: {e}", exc_info=True)
+        course_docs, course_vector_store = None, None
+
+    # Create dual retriever if course_vector_store is available
+    if course_vector_store:
+        # Create course retriever
+        course_retriever = course_vector_store.as_retriever(search_kwargs={"k": 10})
+        
+        # Import DualCollectionRetriever from retrievers.py
+        from .retrievers import DualCollectionRetriever
+        
+        # Create dual retriever
+        dual_retriever = DualCollectionRetriever(
+            primary_retriever=ensemble_retriever,
+            course_retriever=course_retriever,
+            use_reranking=True,
+            max_documents=15,
+            max_course_documents=5,
+            cross_encoder=cross_encoder
+        )
+        logger.info("Dual retriever configured with primary and course collections")
+    else:
+        logger.info("Course vector store not available. Using only primary retriever.")
+        dual_retriever = ensemble_retriever  # Fall back to ensemble retriever if course store not available
+    
     # Initialize the LLM based on selected backend
     llm = initialize_llm()
     
@@ -134,11 +179,12 @@ def initialize_rag_resources():
 
     # Log which retrievers are active
     retriever_config = {
-        "hybrid_retriever": "Enabled, k=15",
-        "semantic_retriever": "Enabled, k=15",
-        "bm25_retriever": f"Enabled, k=15, lemmatization={'Enabled' if bm25_retriever._use_lemmatization else 'Disabled'}",
-        "mmr_retriever": "Enabled, k=15, fetch_k=20, lambda_mult=0.5",
+        "hybrid_retriever": "Enabled, k=20",
+        "semantic_retriever": "Enabled, k=20",
+        "bm25_retriever": f"Enabled, k=20, lemmatization={'Enabled' if bm25_retriever._use_lemmatization else 'Disabled'}",
         "ensemble_retriever": "Adaptive (query-dependent weights)",
+        "course_retriever": "Enabled, k=10" if course_vector_store else "Disabled",
+        "dual_retriever": "Enabled (max_docs=15, max_course_docs=5)" if course_vector_store else "Disabled (using ensemble_retriever)",
         "cross_encoder": "BAAI/bge-reranker-v2-m3"
     }
     logger.info(f"Retriever configuration: {retriever_config}")
@@ -148,6 +194,7 @@ def initialize_rag_resources():
     
     return {
         "docs_count": len(docs),
+        "course_docs_count": len(course_docs) if course_docs else 0,
         "retrievers": retriever_config,
         "llm_backend": selected_llm_backend
     }
@@ -209,42 +256,33 @@ def initialize_ollama_llm():
 
 def switch_llm_backend(backend: str, api_key: Optional[str] = None):
     """Switch the LLM backend between Ollama and Gemini"""
-    global llm, selected_llm_backend # Referencing global variables
+    global llm, selected_llm_backend
 
-    # --- Import LLM classes (Better at top level, but shown here if needed) ---
-    # It's generally better to put these imports at the top of the file
     try:
         from .llm_classes import OllamaLLM, GeminiLLM
     except ImportError as e:
         logger.error(f"Failed to import LLM classes: {e}")
         raise ValueError(f"Internal server error: Could not load LLM classes.") from e
-    # --- End Imports ---
 
     if backend not in ["ollama", "gemini"]:
         raise ValueError("Invalid backend. Must be 'ollama' or 'gemini'.")
 
     if backend == "gemini":
-        # Use provided API key or get from environment
-        # Ensure api_key from argument takes precedence if it's a valid string
         effective_api_key = api_key if api_key and api_key.strip() else os.environ.get("GEMINI_API_KEY")
 
-        # Explicit check for empty API key after checking both sources
         if not effective_api_key or not effective_api_key.strip():
             logger.warning("Gemini API key not found in request or environment variable GEMINI_API_KEY.")
             raise ValueError("Gemini API key not provided. Please provide an API key in the request or set the GEMINI_API_KEY environment variable.")
 
-        # Initialize Gemini LLM with the API key
         try:
-            # Pass the validated key
             llm = GeminiLLM(api_key=effective_api_key, temperature=0.0)
             selected_llm_backend = "gemini"
             logger.info(f"Switched LLM to Gemini.")
-            # REMOVED: os.environ["GEMINI_API_KEY"] = effective_api_key # Unnecessary and potentially problematic
             return "gemini"
         except Exception as e:
             logger.error(f"Failed to initialize Gemini LLM: {e}", exc_info=True)
-            raise ValueError(f"Failed to initialize Gemini LLM: {e}") from e # Propagate specific error
-    else: # backend == "ollama"
+            raise ValueError(f"Failed to initialize Gemini LLM: {e}") from e
+    else:
         try:
             llm = OllamaLLM(model_name="gemma3:12b", temperature=0.0)
             selected_llm_backend = "ollama"
@@ -252,7 +290,7 @@ def switch_llm_backend(backend: str, api_key: Optional[str] = None):
             return "ollama"
         except Exception as e:
             logger.error(f"Failed to initialize Ollama LLM: {e}", exc_info=True)
-            raise ValueError(f"Failed to initialize Ollama LLM: {e}") from e # Propagate specific error
+            raise ValueError(f"Failed to initialize Ollama LLM: {e}") from e
 
 def get_model_info():
     """Get information about the currently selected model"""
@@ -294,3 +332,15 @@ def get_vector_store():
     """Get the vector store"""
     global vector_store
     return vector_store
+
+def get_dual_retriever():
+    """Get the dual retriever that queries both collections"""
+    global dual_retriever
+    return dual_retriever
+
+def get_course_retriever():
+    """Get the course retriever"""
+    global course_vector_store
+    if course_vector_store:
+        return course_vector_store.as_retriever(search_kwargs={"k": 10})
+    return None

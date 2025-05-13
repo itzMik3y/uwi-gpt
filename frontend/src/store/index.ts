@@ -12,17 +12,19 @@ import {
 } from 'redux-persist';
 import storage from 'redux-persist/lib/storage';
 import authReducer from './slices/authSlice';
-import chatReducer from './slices/chatSlice'; // Corrected path if needed
+import chatReducer from './slices/chatSlice'; 
+import adminAuthReducer from './slices/adminAuthSlice';
 
 const persistConfig = {
   key: 'root',
   storage,
-  whitelist: ['auth'] // Only persist auth state
+  whitelist: ['auth', 'adminAuth'] // Persist both auth and adminAuth states
 };
 
 const rootReducer = combineReducers({
   auth: authReducer,
   chat: chatReducer,
+  adminAuth: adminAuthReducer,
   // Add other reducers here
 });
 

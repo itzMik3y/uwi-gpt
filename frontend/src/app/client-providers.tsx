@@ -1,9 +1,10 @@
+// app/client-providers.tsx
 'use client';
 
 import { Provider } from 'react-redux';
 import { PersistGate } from 'redux-persist/integration/react';
 import { store, persistor } from '@/store';
-import { AuthProvider } from './auth-provider';
+import { AuthProvider } from './providers/auth-provider';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 

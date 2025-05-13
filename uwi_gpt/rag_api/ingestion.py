@@ -624,7 +624,419 @@ def improved_document_chunker(
     return chunks
 
 
+COURSE_COLLECTION = "course_collection"
+COURSE_DATA_PATH = os.path.join(BASE_DIR, "course_data")  # Directory for course JSON files
+COURSE_CACHE_PATH = os.path.join(BASE_DIR, "course_cache.joblib")
+COURSE_STATE_CACHE_PATH = os.path.join(BASE_DIR, "course_state.json")
 
+# Add the format_term_label and create_documents_from_course_data functions exactly as you provided
+
+def load_course_data(course_data_dir: str) -> List[Dict[str, Any]]:
+    """Load course data from JSON files in the specified directory."""
+    courses = []
+    if not os.path.exists(course_data_dir):
+        os.makedirs(course_data_dir)
+        logging.warning(f"Course data directory {course_data_dir} did not exist. Created it.")
+        return courses
+    
+    for filename in os.listdir(course_data_dir):
+        if filename.endswith('.json'):
+            try:
+                file_path = os.path.join(course_data_dir, filename)
+                with open(file_path, 'r') as f:
+                    data = json.load(f)
+                    # Handle both direct list or object with courses field
+                    if isinstance(data, list):
+                        courses.extend(data)
+                    elif isinstance(data, dict) and 'courses' in data:
+                        courses.extend(data['courses'])
+                    else:
+                        logging.warning(f"Unexpected JSON structure in {filename}")
+            except Exception as e:
+                logging.error(f"Error loading course data from {filename}: {e}")
+    
+    logging.info(f"Loaded {len(courses)} course entries from {course_data_dir}")
+    return courses
+
+
+def format_term_label(term_code: str) -> str:
+    """
+    Convert term codes like "201510" to human-readable format like "2015/2016 Semester I".
+    
+    Args:
+        term_code: Term code in format YYYYSS where SS is the semester code
+        
+    Returns:
+        Formatted term string
+    """
+    if not term_code or not term_code.isdigit() or len(term_code) < 6:
+        return term_code  # Return as-is if invalid format
+    
+    year = term_code[:4]
+    suffix = term_code[4:6]
+    next_year = str(int(year) + 1)
+    
+    if suffix == "10":
+        name = "Semester I"
+    elif suffix == "20":
+        name = "Semester II"
+    elif suffix == "40":
+        name = "Summer School"
+    else:
+        name = f"Term {suffix}"  # Fallback for unknown codes
+        
+    return f"{year}/{next_year} {name}"
+
+def create_documents_from_course_data(courses_data: List[Dict[str, Any]]) -> List[Document]:
+    """
+    Create Document objects from course data JSON.
+    Each course is kept as a single document (not chunked) for better retrieval.
+    """
+    docs = []
+    for course in courses_data:
+        # Create a descriptive text combining all relevant information
+        page_content = []
+        
+        # Add title and course number
+        course_title = course.get("courseTitle", "Unknown Title")
+        course_number = course.get("courseNumber", "")
+        subject = course.get("subject", "")
+        subject_description = course.get("subjectDescription", "")
+        page_content.append(f"Course {subject}{course_number}: {course_title}")
+        
+        # Add subject description if available
+        if subject_description:
+            page_content.append(f"Subject: {subject_description}")
+        
+        # Add credits info
+        credit_low = course.get("creditHourLow")
+        credit_high = course.get("creditHourHigh")
+        if credit_low is not None and credit_high is not None:
+            page_content.append(f"Credits: {credit_low}-{credit_high}")
+        
+        # Add department and faculty (not college)
+        department = course.get("department", "")
+        faculty = course.get("college", "")  # Using college field but referring to it as faculty
+        if department or faculty:
+            parts = []
+            if department:
+                parts.append(f"Department: {department}")
+            if faculty:
+                parts.append(f"Faculty: {faculty}")  # Changed from College to Faculty
+            page_content.append(", ".join(parts))
+        
+        # Add term information with semester decoding if available
+        term_effective = course.get("termEffective", "")
+        if term_effective:
+            formatted_term = format_term_label(term_effective)
+            page_content.append(f"Term Effective: {formatted_term}")
+        
+        # Add prerequisites if available
+        if course.get("prerequisites") and len(course.get("prerequisites", [])) > 0:
+            prereq_parts = ["Prerequisites:"]
+            for prereq in course.get("prerequisites", []):
+                prereq_subject = prereq.get('subject', '')
+                prereq_number = prereq.get('number', '')
+                prereq_grade = prereq.get('grade', 'C')
+                
+                # Format as CHIN2001 (Chinese 2001)
+                prereq_code = f"{prereq_subject.split(' - ')[0]}{prereq_number}"
+                prereq_name = ""
+                if " - " in prereq.get('subject', ''):
+                    # Extract the full name if format is "CHIN - Chinese"
+                    subject_parts = prereq.get('subject', '').split(" - ")
+                    if len(subject_parts) > 1:
+                        prereq_name = f" ({subject_parts[1]} {prereq_number})"
+                prereq_parts.append(f"- {prereq_code}{prereq_name} (Grade: {prereq_grade})")
+            page_content.append("\n".join(prereq_parts))
+        else:
+            page_content.append("Prerequisites: None")
+        
+        # Add course description if available
+        course_description = course.get("courseDescription")
+        if course_description:
+            page_content.append(f"Description: {course_description}")
+        
+        # Create the document with rich metadata
+        formatted_term = format_term_label(term_effective) if term_effective else ""
+        docs.append(Document(
+            page_content="\n\n".join(page_content),
+            metadata={
+                "course_code": f"{subject}{course_number}",
+                "course_title": course_title,
+                "department": department,
+                "faculty": faculty,  # Changed from college to faculty
+                "subject_description": subject_description,
+                "subject": subject,
+                "subject_code": course.get("subjectCode", ""),
+                "credit_hours": f"{credit_low}-{credit_high}",
+                "credit_low": credit_low,
+                "credit_high": credit_high,
+                "doc_type": "course_description",
+                "source_file": "course_data.json",  # Will be updated with actual filename
+                "heading": f"Course {subject}{course_number}: {course_title}",
+                "format": "json",
+                "term_effective": term_effective,
+                "term_formatted": formatted_term,  # Add the formatted term to metadata as well
+                # Store concatenated subject+number for prerequisites
+                "prerequisites": [f"{p.get('subject', '').split(' - ')[0]}{p.get('number', '')}" for p in course.get("prerequisites", [])],
+                "has_prerequisites": len(course.get("prerequisites", [])) > 0
+            }
+        ))
+    return docs
+
+def initialize_course_vector_store(
+    course_data_dir: str = COURSE_DATA_PATH,
+    collection_name: str = COURSE_COLLECTION,
+    course_cache_path: str = COURSE_CACHE_PATH,
+    state_cache_path: str = COURSE_STATE_CACHE_PATH,
+    url: str = "http://localhost:6333"
+):
+    """Initialize or update the course vector store."""
+    init_start = time.perf_counter()
+    
+    # Initialize embedding models
+    dense_embeddings = HuggingFaceEmbeddings(
+        model_name="BAAI/bge-m3",
+        model_kwargs={"trust_remote_code": True, "device": device},
+        encode_kwargs={'normalize_embeddings':True}
+    )
+    sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25")
+    
+    # Create course data directory if it doesn't exist
+    if not os.path.exists(course_data_dir):
+        os.makedirs(course_data_dir)
+        logging.info(f"Created course data directory: {course_data_dir}")
+    
+    # Check if files have changed
+    current_state = {}
+    for filename in os.listdir(course_data_dir):
+        if filename.endswith('.json'):
+            full_path = os.path.join(course_data_dir, filename)
+            current_state[filename] = os.path.getmtime(full_path)
+    
+    # Load previous state
+    previous_state = {}
+    if os.path.exists(state_cache_path):
+        try:
+            with open(state_cache_path, "r") as f:
+                previous_state = json.load(f)
+        except Exception as e:
+            logging.error(f"Error loading course state cache: {e}")
+    
+    # Determine if reprocessing is needed
+    reprocess = (current_state != previous_state)
+    
+    # Extract host information for connections
+    import re
+    host_match = re.match(r'https?://([^:/]+)(?::\d+)?', url)
+    grpc_host = host_match.group(1) if host_match else "localhost"
+    grpc_port = 6334
+    
+    # Load course data regardless - we'll need it if we're creating a new collection
+    logging.info("Loading and processing course data...")
+    course_data = load_course_data(course_data_dir)
+    
+    if not course_data:
+        logging.warning("No course data found. Skipping course vector store creation.")
+        return None, None
+    
+    course_docs = create_documents_from_course_data(course_data)
+    logging.info(f"Created {len(course_docs)} course documents.")
+    
+    # Convert to LangChain documents
+    langchain_course_docs = []
+    for doc in course_docs:
+        langchain_course_docs.append(LangchainDocument(
+            page_content=doc.page_content,
+            metadata=doc.metadata
+        ))
+    
+    # APPROACH 1: Try with a different collection name
+    # If the original collection can't be deleted, use a new one with timestamp
+    if reprocess:
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        new_collection_name = f"{collection_name}_{timestamp}"
+        logging.info(f"Using new collection name: {new_collection_name} to avoid deletion issues")
+        
+        # Create vector store with the new name
+        VECTOR_BATCH_SIZE = 250
+        try:
+            # Try with gRPC first
+            logging.info(f"Creating collection '{new_collection_name}' with gRPC...")
+            vector_store = QdrantVectorStore.from_documents(
+                langchain_course_docs,
+                embedding=dense_embeddings,
+                sparse_embedding=sparse_embeddings,
+                host=grpc_host,
+                port=grpc_port,
+                prefer_grpc=True,
+                collection_name=new_collection_name,
+                force_recreate=True,
+                retrieval_mode=RetrievalMode.HYBRID,
+                batch_size=VECTOR_BATCH_SIZE,
+                vector_name="default"
+            )
+            # Save the documents cache
+            joblib.dump(course_docs, course_cache_path)
+            # Save the current state
+            with open(state_cache_path, "w") as f:
+                json.dump(current_state, f)
+            
+            init_end = time.perf_counter()
+            logging.info(f"Course vector store initialization took {init_end - init_start:.2f} seconds")
+            return course_docs, vector_store
+        except Exception as e:
+            logging.warning(f"Error creating collection with gRPC: {e}")
+            
+            # Fall back to HTTP
+            try:
+                logging.info(f"Creating collection '{new_collection_name}' with HTTP...")
+                vector_store = QdrantVectorStore.from_documents(
+                    langchain_course_docs,
+                    embedding=dense_embeddings,
+                    sparse_embedding=sparse_embeddings,
+                    url=url,
+                    collection_name=new_collection_name,
+                    force_recreate=True,
+                    retrieval_mode=RetrievalMode.HYBRID,
+                    batch_size=VECTOR_BATCH_SIZE,
+                    vector_name="default"
+                )
+                # Save the documents cache
+                joblib.dump(course_docs, course_cache_path)
+                # Save the current state
+                with open(state_cache_path, "w") as f:
+                    json.dump(current_state, f)
+                
+                init_end = time.perf_counter()
+                logging.info(f"Course vector store initialization took {init_end - init_start:.2f} seconds")
+                return course_docs, vector_store
+            except Exception as e2:
+                logging.error(f"Error creating collection with HTTP: {e2}")
+                # Continue to approach 2 if this fails
+    
+    # APPROACH 2: Try to load the existing collection if we're not reprocessing
+    # or if approach 1 failed
+    try:
+        # Check if collection exists
+        from qdrant_client import QdrantClient
+        client = QdrantClient(url=url)
+        collections = client.get_collections().collections
+        collection_exists = any(collection.name == collection_name for collection in collections)
+        
+        if collection_exists:
+            logging.info(f"Trying to load existing collection '{collection_name}'...")
+            
+            # Try with gRPC first
+            try:
+                vector_store = QdrantVectorStore.from_existing_collection(
+                    embedding=dense_embeddings,
+                    sparse_embedding=sparse_embeddings,
+                    collection_name=collection_name,
+                    host=grpc_host,
+                    port=grpc_port,
+                    prefer_grpc=True,
+                    retrieval_mode=RetrievalMode.HYBRID,
+                    vector_name="default"
+                )
+                
+                # If we got here, we successfully loaded the collection
+                logging.info(f"Successfully loaded existing collection '{collection_name}'")
+                
+                # Save the documents cache if needed
+                joblib.dump(course_docs, course_cache_path)
+                # Save the current state if needed
+                if reprocess:
+                    with open(state_cache_path, "w") as f:
+                        json.dump(current_state, f)
+                
+                init_end = time.perf_counter()
+                logging.info(f"Course vector store initialization took {init_end - init_start:.2f} seconds")
+                return course_docs, vector_store
+            except Exception as e:
+                logging.warning(f"Error loading collection with gRPC: {e}, trying HTTP...")
+                
+                # Fall back to HTTP
+                try:
+                    vector_store = QdrantVectorStore.from_existing_collection(
+                        embedding=dense_embeddings,
+                        sparse_embedding=sparse_embeddings,
+                        collection_name=collection_name,
+                        url=url,
+                        retrieval_mode=RetrievalMode.HYBRID,
+                        vector_name="default"
+                    )
+                    
+                    # If we got here, we successfully loaded the collection
+                    logging.info(f"Successfully loaded existing collection '{collection_name}'")
+                    
+                    # Save the documents cache if needed
+                    joblib.dump(course_docs, course_cache_path)
+                    # Save the current state if needed
+                    if reprocess:
+                        with open(state_cache_path, "w") as f:
+                            json.dump(current_state, f)
+                    
+                    init_end = time.perf_counter()
+                    logging.info(f"Course vector store initialization took {init_end - init_start:.2f} seconds")
+                    return course_docs, vector_store
+                except Exception as e2:
+                    logging.error(f"Error loading collection with HTTP: {e2}")
+                    # If we can't load it, continue to approach 3
+        
+    except Exception as e:
+        logging.error(f"Error checking or loading collections: {e}")
+    
+    # APPROACH 3: Try direct REST API calls to delete the collection
+    # This is a last resort if all other approaches failed
+    try:
+        import requests
+        
+        # Try to delete via REST API directly
+        logging.info(f"Attempting to delete collection '{collection_name}' via direct REST API...")
+        delete_url = f"{url}/collections/{collection_name}"
+        response = requests.delete(delete_url)
+        
+        if response.status_code == 200 or response.status_code == 404:
+            logging.info(f"Successfully deleted or collection not found: {response.status_code}")
+            
+            # Now try to create it again
+            try:
+                logging.info(f"Creating collection '{collection_name}' after REST API deletion...")
+                vector_store = QdrantVectorStore.from_documents(
+                    langchain_course_docs,
+                    embedding=dense_embeddings,
+                    sparse_embedding=sparse_embeddings,
+                    url=url,
+                    collection_name=collection_name,
+                    force_recreate=False,  # We've already deleted it
+                    retrieval_mode=RetrievalMode.HYBRID,
+                    batch_size=250,
+                    vector_name="default"
+                )
+                
+                # Save the documents cache
+                joblib.dump(course_docs, course_cache_path)
+                # Save the current state
+                with open(state_cache_path, "w") as f:
+                    json.dump(current_state, f)
+                
+                init_end = time.perf_counter()
+                logging.info(f"Course vector store initialization took {init_end - init_start:.2f} seconds")
+                return course_docs, vector_store
+            except Exception as e:
+                logging.error(f"Error creating collection after REST API deletion: {e}")
+        else:
+            logging.error(f"Failed to delete collection via REST API: {response.status_code}, {response.text}")
+    
+    except Exception as e:
+        logging.error(f"Error with direct REST API approach: {e}")
+    
+    # If all approaches fail, raise an exception
+    logging.error(f"All approaches to create/load course vector store failed")
+    raise Exception("Failed to initialize course vector store after multiple attempts")
 
 
 def load_existing_qdrant_store(
@@ -998,15 +1410,81 @@ if __name__ == "__main__":
         url=QDRANT_URL,
     )
     
-    # Run a quick test search to verify everything is working
-    query = "What are the computer science degree programs?"
-    results = vector_store.similarity_search_with_score(query, k=3)
+    # Initialize or load course data vector store
+    COURSE_DATA_DIR = os.path.join(BASE_DIR, "course_data")
+    COURSE_COLLECTION = "course_collection"
+    COURSE_CACHE_PATH = os.path.join(BASE_DIR, "course_cache.joblib")
+    COURSE_STATE_CACHE_PATH = os.path.join(BASE_DIR, "course_state.json")
     
-    print("\n=== Sample Search Results ===")
-    for doc, score in results:
+    course_docs, course_vector_store = initialize_course_vector_store(
+        course_data_dir=COURSE_DATA_DIR,
+        collection_name=COURSE_COLLECTION,
+        course_cache_path=COURSE_CACHE_PATH,
+        state_cache_path=COURSE_STATE_CACHE_PATH,
+        url=QDRANT_URL,
+    )
+    
+    # Test document vector store
+    print("\n=== Document Vector Store Test ===")
+    doc_query = "What are the computer science degree programs?"
+    doc_results = vector_store.similarity_search_with_score(doc_query, k=3)
+    
+    for doc, score in doc_results:
         print(f"Score: {score:.4f}")
         print(f"Content: {doc.page_content[:150]}...")
         print(f"Metadata: {doc.metadata}")
         print("-" * 50)
+    
+    # Test course vector store if available
+    if course_vector_store:
+        print("\n=== Course Vector Store Test ===")
+        course_query = "BIOC3251 prerequisites"
+        course_results = course_vector_store.similarity_search_with_score(course_query, k=3)
+        
+        for doc, score in course_results:
+            print(f"Score: {score:.4f}")
+            print(f"Content: {doc.page_content[:150]}...")
+            print(f"Metadata: {doc.metadata}")
+            print("-" * 50)
+        
+        # Test dual retriever
+        print("\n=== Dual Retriever Test ===")
+        from retrievers import DualCollectionRetriever
+        from sentence_transformers import CrossEncoder
+        
+        # Create retrievers for testing
+        doc_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+        course_retriever = course_vector_store.as_retriever(search_kwargs={"k": 5})
+        
+        # Create cross-encoder for reranking
+        try:
+            cross_encoder = CrossEncoder("BAAI/bge-reranker-v2-m3")
+        except Exception as e:
+            print(f"Could not load cross-encoder: {e}")
+            cross_encoder = None
+        
+        # Create dual retriever
+        dual_retriever = DualCollectionRetriever(
+            primary_retriever=doc_retriever,
+            course_retriever=course_retriever,
+            use_reranking=cross_encoder is not None,
+            max_documents=10,
+            max_course_documents=3,
+            cross_encoder=cross_encoder
+        )
+        
+        # Test with a query that might match both collections
+        dual_query = "Computer Science course requirements"
+        dual_results = dual_retriever.get_relevant_documents(dual_query)
+        
+        print(f"Dual retriever returned {len(dual_results)} documents:")
+        for i, doc in enumerate(dual_results):
+            doc_source = "course_data.json" in str(doc.metadata.get("source_file", ""))
+            source_type = "COURSE" if doc_source else "DOCUMENT"
+            print(f"{i+1}. [{source_type}] {doc.metadata.get('heading', 'No heading')}")
+            print(f"   Content: {doc.page_content[:100]}...")
+            print()
+    else:
+        print("\nCourse vector store not available. Skipping course tests.")
 
     print("\nIngestion and search testing completed successfully.")

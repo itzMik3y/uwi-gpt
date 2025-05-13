@@ -30,7 +30,12 @@ from .credit_check import (
 )
 from .utils import build_course_query, serialize_course
 from typing import List, Optional
-
+from rag_api.llm_classes import GeminiLLM
+from datetime import date
+import os
+from fastapi import Header
+from rag_api.prompts import ACADEMIC_INSIGHTS_DETAILED_PROMPT
+import json
 router = APIRouter(prefix="/academic", tags=["Academic"])
 
 # 1) Dictionaries for schema lookup
@@ -352,3 +357,157 @@ async def credit_check_with_transcript(
     reports_text = buf.getvalue()
 
     return {"analysis": result, "reports": reports_text}
+
+class InsightRequest(BaseModel):
+    """Request body for academic insights."""
+    question: Optional[str] = Field(
+        None, description="An optional free-text question about grades to include in the prompt."
+    )
+
+class InsightResponse(BaseModel):
+    insights: str
+
+async def resolve_gemini_api_key(
+    x_gemini_api_key: Optional[str] = Header(None)
+) -> str:
+    if x_gemini_api_key and x_gemini_api_key.strip():
+        return x_gemini_api_key.strip()
+    env = os.environ.get("GEMINI_API_KEY")
+    if not env:
+        raise HTTPException(500, "Gemini API key not configured")
+    return env
+
+@router.post(
+    "/insights",
+    response_model=InsightResponse,
+    summary="Generate one-page academic insights"
+)
+@router.post(
+    "/insights",
+    response_model=InsightResponse,
+    summary="Generate one-page academic insights"
+)
+async def academic_insights(
+    payload: InsightRequest,
+    api_key: str = Depends(resolve_gemini_api_key),
+    current_user: User | Admin = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    # --- 1) Build transcript_for_analysis exactly as in /credit-check ---
+    transcript = {"data": {"terms": [], "overall": {}}}
+    
+    # For enrollment year calculation
+    all_term_codes = []
+    
+    for term in sorted(current_user.terms, key=lambda t: t.term_code, reverse=True):
+        # Collect term codes for enrollment year calculation
+        if term.term_code and term.term_code != "CURRENT" and term.term_code.isdigit() and len(term.term_code) >= 4:
+            all_term_codes.append(term.term_code)
+            
+        courses = [
+            {
+                "course_code": g.course_code,
+                "course_title": g.course_title,
+                "credit_hours": g.credit_hours,
+                "grade_earned": g.grade_earned,
+                "whatif_grade": g.whatif_grade,
+            }
+            for g in current_user.grades
+            if g.term_id == term.id
+        ]
+        transcript["data"]["terms"].append({
+            "term_code": term.term_code,
+            "courses": courses,
+            "semester_gpa": term.semester_gpa,
+            "cumulative_gpa": term.cumulative_gpa,
+            "degree_gpa": term.degree_gpa,
+            "credits_earned_to_date": term.credits_earned_to_date,
+        })
+    if transcript["data"]["terms"]:
+        recent = transcript["data"]["terms"][0]
+        transcript["data"]["overall"] = {
+            "cumulative_gpa": recent["cumulative_gpa"],
+            "degree_gpa": recent["degree_gpa"],
+            "total_credits_earned": recent["credits_earned_to_date"],
+        }
+    else:
+        transcript["data"]["overall"] = {
+            "cumulative_gpa": 0.0,
+            "degree_gpa": None,
+            "total_credits_earned": 0.0,
+        }
+    
+    # Calculate enrollment year from collected term codes
+    enrollment_year = "Unknown"
+    if all_term_codes:
+        valid_year_codes = [tc for tc in all_term_codes if tc.isdigit() and len(tc) >= 4]
+        if valid_year_codes:
+            earliest_term_code = min(valid_year_codes)
+            enrollment_year = earliest_term_code[:4]
+
+    # --- 2) Run requirement checks ---
+    faculty_schema = FACULTY_SCHEMAS[current_user.faculty]
+    declared = (current_user.majors or "").split(",")
+    major_schema, student_major_code = MAJOR_SCHEMAS[declared[0]]
+    minor_schema = None
+    if current_user.minors:
+        minor_schema = MINOR_SCHEMAS.get(current_user.minors.split(",")[0], (None,))[0]
+
+    result = check_all_requirements(
+        transcript,
+        faculty_schema,
+        major_schema,
+        student_major_code,
+        minor_schema,
+        student_info=None
+    )
+    potential = check_potential_graduation_standardized(result, student_info=None)
+    result["potentially_eligible_for_graduation"] = potential["potential_graduate"]
+    result["potential_all_requirements_satisfied"] = potential["potential_all_requirements_satisfied"]
+
+    # --- 3) Capture formatted text report ---
+    buf = io.StringIO()
+    old = sys.stdout
+    sys.stdout = buf
+
+    print_report_header(
+        faculty_schema.get("faculty_name", current_user.faculty),
+        major_schema.get("major"),
+        student_major_code,
+        minor_schema.get("minor") if minor_schema else None
+    )
+    print_credit_summary(result["faculty_result"]["credits_earned"], faculty_schema)
+    print_foundation_report(result["faculty_result"]["foundation_status"])
+    if result["faculty_result"].get("language_status"):
+        print_language_requirement_report(result["faculty_result"]["language_status"])
+    print_major_requirements_report(result["major_result"])
+    if minor_schema:
+        print_minor_requirements_report(result["minor_result"])
+    print_potential_graduation_report(potential)
+    print_final_status(result)
+
+    sys.stdout = old
+    reports_text = buf.getvalue()
+
+    # --- 4) JSON-serialize analysis (convert any sets → lists) ---
+    analysis_json = json.dumps(result, indent=2, default=list)
+
+    # --- 5) Build prompt including the user's question ---
+    prompt = ACADEMIC_INSIGHTS_DETAILED_PROMPT.format(
+        analysis=analysis_json,
+        reports=reports_text,
+        user_name=f"{current_user.firstname} {current_user.lastname}",
+        student_id=current_user.student_id,
+        enrollment_year=enrollment_year,  # Now using the calculated enrollment year
+        faculty=current_user.faculty,
+        majors=current_user.majors or "None",
+        minors=current_user.minors or "None",
+        cumulative_gpa=transcript["data"]["overall"]["cumulative_gpa"],
+        grades=json.dumps(transcript["data"]["terms"]),
+        current_date=date.today().isoformat(),
+        question=payload.question or ""
+    )
+    llm = GeminiLLM(api_key=api_key)
+    insights = llm(prompt)
+
+    return InsightResponse(insights=insights)

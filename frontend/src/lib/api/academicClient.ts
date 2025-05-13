@@ -104,6 +104,18 @@ export interface CreditCheckResponse { // Assuming this interface is already def
   reports: string;
 }
 
+export interface AcademicInsightsRequest {
+  /** 
+   * A one‐sentence question from the student, e.g. 
+   * "Based on my current grades, what should I focus on next semester?"
+   */
+  question: string;
+}
+
+export interface AcademicInsightsResponse {
+  insights: string;
+}
+
 /**
  * GET /academic/credit-check
  * Requires Authorization header, returns analysis + human-readable report
@@ -149,6 +161,19 @@ export async function getCreditCheckWithTranscript(
   } catch (err) {
     throw normalizeError(err);
   }
+}   
+export async function getAcademicInsights(
+  payload: AcademicInsightsRequest
+): Promise<AcademicInsightsResponse> {
+  try {
+    const { data } = await academicApiClient.post<AcademicInsightsResponse>(
+      '/academic/insights',
+      payload
+    );
+    return data;
+  } catch (err) {
+    throw normalizeError(err);
+  }
 }
 
 
@@ -156,7 +181,8 @@ export async function getCreditCheckWithTranscript(
 const academicClient = { // Changed this to match the import in page.tsx
   getCreditCheck,
   searchCourses,
-  getCreditCheckWithTranscript, // Add the new function
+  getCreditCheckWithTranscript, 
+  getAcademicInsights,// Add the new function
 };
 
 export default academicClient;

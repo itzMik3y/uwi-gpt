@@ -479,3 +479,81 @@ class EnsembleRetriever(BaseRetriever):
          return sorted_docs
 
      get_relevant_documents = _get_relevant_documents
+
+# Add to retrievers.py
+class DualCollectionRetriever(BaseRetriever):
+    """
+    A retriever that queries two collections - one for general documents
+    and another for course data - and combines the results.
+    """
+    _primary_retriever: Any = PrivateAttr()
+    _course_retriever: Any = PrivateAttr()
+    _use_reranking: bool = PrivateAttr()
+    _max_documents: int = PrivateAttr()
+    _max_course_documents: int = PrivateAttr()
+    _cross_encoder: Any = PrivateAttr()
+    
+    def __init__(
+        self, 
+        primary_retriever: BaseRetriever, 
+        course_retriever: BaseRetriever,
+        use_reranking: bool = True,
+        max_documents: int = 15,
+        max_course_documents: int = 5,
+        cross_encoder=None
+    ):
+        """
+        Initialize the dual collection retriever.
+        
+        Args:
+            primary_retriever: Retriever for primary documents
+            course_retriever: Retriever for course documents
+            use_reranking: Whether to use cross-encoder reranking
+            max_documents: Maximum total documents to return
+            max_course_documents: Maximum course documents to include
+            cross_encoder: Optional cross-encoder for reranking
+        """
+        super().__init__()
+        self._primary_retriever = primary_retriever
+        self._course_retriever = course_retriever
+        self._use_reranking = use_reranking
+        self._max_documents = max_documents
+        self._max_course_documents = max_course_documents
+        self._cross_encoder = cross_encoder
+        
+    def _rerank_with_crossencoder(self, query: str, docs: list) -> list:
+        """Re-rank documents using cross-encoder if available."""
+        if not self._cross_encoder or not docs:
+            return docs
+            
+        pairs = [(query, doc.page_content) for doc in docs]
+        scores = self._cross_encoder.predict(pairs)
+        ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
+        return [doc for doc, score in ranked]
+    
+    def _get_relevant_documents(self, query: str, **kwargs) -> list:
+        """Query both collections and combine results."""
+        # Query both retrievers
+        primary_docs = self._primary_retriever.get_relevant_documents(query, **kwargs)
+        try:
+            course_docs = self._course_retriever.get_relevant_documents(query, **kwargs)
+        except Exception as e:
+            # If course retriever fails, proceed with just primary docs
+            logger.warning(f"Course retriever failed: {e}. Using primary docs only.")
+            course_docs = []
+            
+        # Combine results while respecting limits
+        limited_course_docs = course_docs[:self._max_course_documents]
+        primary_docs_limit = self._max_documents - len(limited_course_docs)
+        limited_primary_docs = primary_docs[:primary_docs_limit]
+        
+        # Combine and optionally rerank
+        combined_docs = limited_primary_docs + limited_course_docs
+        
+        if self._use_reranking and self._cross_encoder:
+            reranked_docs = self._rerank_with_crossencoder(query, combined_docs)
+            return reranked_docs
+        
+        return combined_docs
+        
+    get_relevant_documents = _get_relevant_documents
