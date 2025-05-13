@@ -231,7 +231,6 @@ class SlotOut(BaseModel):
 
 
 class BookingCreate(BaseModel):
-    student_id: int
     slot_id: int
 
 

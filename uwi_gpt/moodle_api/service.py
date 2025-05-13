@@ -1,4 +1,5 @@
 # moodle_api/service.py
+from datetime import datetime
 import os
 import re
 import json
@@ -15,9 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # from sqlalchemy.orm import sessionmaker
 import traceback
 
+from auth.models import CourseSchedule
+
 # Relative import for credentials models
 from .models import MoodleCredentials, SASCredentials
 from sqlalchemy.future import select
+
 # Imports for the data saving function & helpers
 from user_db.services import (
     get_course_by_id,
@@ -26,6 +30,7 @@ from user_db.services import (
     create_term,
     enroll_user_in_course,
     create_or_update_course_grade,
+    save_course_schedule,
 )
 from user_db.schemas import (
     CourseCreate,
@@ -773,8 +778,7 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
         transcript_data = parse_transcript_data(target_page.text)
 
         # ===== MAJOR/MINOR INFO RETRIEVAL =====
-        print("Fetching major/minor information...")
-        
+
         # Submit term for accessing student details
         term_submit_page = "https://ban.mona.uwi.edu:9077/ssb8x/bwskflib.P_SelDefTerm"
         term_submit_resp = session.get(term_submit_page, headers=headers)
@@ -787,20 +791,24 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
             student_info = {"Majors": [], "Minors": [], "Faculty": None}
         else:
             term_hidden_value = term_hidden_inputs.get("value")
-            term_select = "202520"  # hardcoded for now (2025/2026 semester 2)
+            term_select = "202420"  # hardcoded for now (2024/2025 semester 2)
 
             term_payload = {
                 "name_var": term_hidden_value,
                 "term_in": term_select,
             }
 
-            student_registration_page = "https://ban.mona.uwi.edu:9077/ssb8x/bwcklibs.P_StoreTerm"
+            student_registration_page = (
+                "https://ban.mona.uwi.edu:9077/ssb8x/bwcklibs.P_StoreTerm"
+            )
             student_registration_resp = session.post(
                 student_registration_page, data=term_payload, headers=headers_form
             )
 
             # Access the major/minor info page
-            fac_maj_min_page = "https://ban.mona.uwi.edu:9077/ssb8x/UWM_CHANGE_MAJOR.P_DisplayHello"
+            fac_maj_min_page = (
+                "https://ban.mona.uwi.edu:9077/ssb8x/UWM_CHANGE_MAJOR.P_DisplayHello"
+            )
             fac_maj_min_resp = session.get(fac_maj_min_page, headers=headers)
 
             def parse_student_info(html_content):
@@ -843,13 +851,206 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
                 return info
 
             student_info = parse_student_info(fac_maj_min_resp.text)
-            print(f"Found student info: {len(student_info['Majors'])} majors, {len(student_info['Minors'])} minors")
+            print(
+                f"Found student info: {len(student_info['Majors'])} majors, {len(student_info['Minors'])} minors"
+            )
+
+        # ===== CALENDAR - SAS - RETRIEVAL =====
+
+        target_page = "https://ban.mona.uwi.edu:9077/ssb8x/bwskfshd.P_CrseSchdDetl"
+
+        result_target_page = session.get(target_page, headers=headers)
+        # print("text of target page, ", result_target_page.text)
+        # print("Current URL: ", result_target_page.url)
+
+        # 1. Status code + final URL
+        print("→ Status code:", result_target_page.status_code)
+        print("→ Final URL:  ", result_target_page.url)
+
+        # 2. Redirect history
+        if result_target_page.history:
+            print("→ Redirect chain:")
+            for resp in result_target_page.history:
+                print("   ", resp.status_code, resp.url)
+        else:
+            print("→ No redirects")
+
+        target_soup = BeautifulSoup(result_target_page.text, "html.parser")
+
+        # Option A: Look for the “Total Credit Hours” text
+        if "Total Credit Hours" in result_target_page.text:
+            print("✅ Found ‘Total Credit Hours’ – looks like the right page")
+        else:
+            print("❌ ‘Total Credit Hours’ not found – wrong page or not logged in")
+
+        # Option B: Look for the very first <caption class="captiontext">
+        first_caption = target_soup.find("caption", class_="captiontext")
+        if first_caption:
+            print("✅ First caption:", first_caption.get_text(strip=True))
+        else:
+            print("❌ No <caption class='captiontext'> – schedule tables missing")
+
+        def parse_course_schedules(soup: BeautifulSoup):
+            print("Starting parse_course_schedules()")
+
+            # 0. Gather all the tables
+            all_tables = soup.find_all("table", class_="datadisplaytable")
+            print(f"Total datadisplaytable tables found: {len(all_tables)}")
+            for idx, tbl in enumerate(all_tables, 1):
+                summary = tbl.get("summary", "<no summary>")
+                caption_tag = tbl.find("caption")
+                caption = (
+                    caption_tag.get_text(strip=True) if caption_tag else "<no caption>"
+                )
+                print(f" Table #{idx}: summary={summary!r}, caption={caption!r}")
+
+            # 1. Identify the “detail” tables (everything except the Meeting Times tables)
+            detail_tables = [
+                tbl
+                for tbl in all_tables
+                if tbl.find("caption")
+                and tbl.find("caption").get_text(strip=True)
+                != "Scheduled Meeting Times"
+            ]
+            print(f"Filtered detail tables: {len(detail_tables)}")
+
+            courses = {}
+
+            for i, detail in enumerate(detail_tables, 1):
+                raw_caption = detail.find("caption").get_text(strip=True)
+                print(f"\n--- Detail table #{i}: caption = {raw_caption!r} ---")
+
+                # split "Data Science Principles - COMP 3162 - B01"
+                parts = [p.strip() for p in raw_caption.split(" - ")]
+                if len(parts) != 3:
+                    print(f" WARNING: caption didn’t split into 3 parts: {parts}")
+                    continue
+                course_title, course_code, section = parts
+                print(
+                    f" Parsed → title={course_title!r}, code={course_code!r}, section={section!r}"
+                )
+
+                # grab Level & Campus
+                def get_field(label):
+                    th = detail.find(
+                        "th", string=lambda txt: txt and label.lower() in txt.lower()
+                    )
+                    if not th:
+                        print(f"  {label!r} not found")
+                        return None
+                    td = th.find_next_sibling(["td", "TD"])
+                    text = td.get_text(strip=True)
+                    print(f"  {label!r} → {text}")
+                    return text
+
+                level = get_field("Level:")
+                campus = get_field("Campus:")
+
+                # 2. Find the very next table as the schedule table
+                next_idx = all_tables.index(detail) + 1
+                if next_idx >= len(all_tables):
+                    print("WARNING: No next table for Meeting Times")
+                    continue
+                sched_tbl = all_tables[next_idx]
+                sched_caption = sched_tbl.find("caption").get_text(strip=True)
+                if sched_caption != "Scheduled Meeting Times":
+                    print(
+                        f"WARNING: Expected 'Scheduled Meeting Times' but got {sched_caption!r}"
+                    )
+                    continue
+                print("  Found corresponding schedule table")
+
+                # 3. Map headers → indices
+                headers = [
+                    th.get_text(strip=True)
+                    for th in sched_tbl.find("tr").find_all("th")
+                ]
+                print(f"  Schedule headers: {headers}")
+                idx_map = {h: j for j, h in enumerate(headers)}
+
+                # 4. Parse each row
+                for ridx, row in enumerate(sched_tbl.find_all("tr")[1:], start=1):
+                    cols = row.find_all("td")
+                    raw_cols = [c.get_text(strip=True) for c in cols]
+                    print(f"  Row #{ridx} raw: {raw_cols}")
+
+                    def parse_time_range(time_str):
+                        try:
+                            start, end = [t.strip() for t in time_str.split("-")]
+                            return start, end
+                        except Exception:
+                            return None, None
+
+                    def parse_date_range(date_range_str):
+                        try:
+                            start_str, end_str = [
+                                d.strip() for d in date_range_str.split("-")
+                            ]
+                            start_date = datetime.strptime(
+                                start_str, "%b %d, %Y"
+                            ).date()
+                            end_date = datetime.strptime(end_str, "%b %d, %Y").date()
+                            return start_date, end_date
+                        except Exception:
+                            return None, None
+
+                    time_str = cols[idx_map["Time"]].get_text(strip=True)
+                    date_range_str = cols[idx_map["Date Range"]].get_text(strip=True)
+
+                    start_time, end_time = parse_time_range(time_str)
+                    start_date, end_date = parse_date_range(date_range_str)
+
+                    # build your entry
+                    entry = {
+                        "instructor": cols[idx_map["Instructors"]].get_text(strip=True),
+                        "level": level,
+                        # this is the column “Schedule Type” (Lab/Lecture/etc)
+                        "session_type": cols[idx_map["Schedule Type"]].get_text(
+                            strip=True
+                        ),
+                        "campus": campus,
+                        "where": cols[idx_map["Where"]]
+                        .get_text(strip=True)
+                        .replace("Located:", "")
+                        .strip(),
+                        "date_range": date_range_str,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                        "time": time_str,
+                        "start_time": start_time,
+                        "end_time": end_time,
+                    }
+                    print(f"  Parsed entry: {entry}")
+
+                    # 5. Group into our courses dict
+                    courses.setdefault(
+                        course_code, {"title": course_title, "sections": {}}
+                    )
+                    courses[course_code]["sections"].setdefault(section, [])
+                    courses[course_code]["sections"][section].append(entry)
+
+            print(f"\nFinished parsing: found {len(courses)} course(s)")
+            return courses
+
+        # Now, only if those checks pass, you can call your parse_course_schedules()
+        if (
+            result_target_page.status_code == 200
+            and not result_target_page.history
+            and first_caption
+        ):
+            course_schedules = parse_course_schedules(target_soup)
+            print(f"Parsed {len(course_schedules)} schedule entries")
+        else:
+            raise RuntimeError(
+                "Failed to load the schedule‐detail page – aborting parse."
+            )
 
         # Combine the data and return
         transcript_data["student_info"] = {
             "majors": student_info["Majors"],
             "minors": student_info["Minors"],
-            "faculty": student_info["Faculty"]
+            "faculty": student_info["Faculty"],
+            "calendar": course_schedules,
         }
 
         return {
@@ -1023,33 +1224,53 @@ async def save_initial_scraped_data(
             and isinstance(sas_payload.get("data"), dict)
         ):
             sas_data = sas_payload["data"]
-            
+
             # --- Update user with major/minor/faculty info ---
             if "student_info" in sas_data:
                 student_info = sas_data["student_info"]
-                
+
                 # Get user record
                 user_result = await db.execute(select(User).where(User.id == user_id))
                 user = user_result.scalar_one_or_none()
-                
+
                 if user:
                     # Process majors (convert list to comma-separated string)
-                    if "majors" in student_info and isinstance(student_info["majors"], list) and student_info["majors"]:
+                    if (
+                        "majors" in student_info
+                        and isinstance(student_info["majors"], list)
+                        and student_info["majors"]
+                    ):
                         user.majors = ",".join(student_info["majors"])
-                    
+
                     # Process minors (convert list to comma-separated string)
-                    if "minors" in student_info and isinstance(student_info["minors"], list) and student_info["minors"]:
+                    if (
+                        "minors" in student_info
+                        and isinstance(student_info["minors"], list)
+                        and student_info["minors"]
+                    ):
                         user.minors = ",".join(student_info["minors"])
-                    
+
                     # Set faculty
                     if "faculty" in student_info and student_info["faculty"]:
                         user.faculty = student_info["faculty"]
-                    
-                    logger.info(f"SYNC SAVE: Updated user {user_id} with academic program information")
+
+                    logger.info(
+                        f"SYNC SAVE: Updated user {user_id} with academic program information"
+                    )
+
                     await db.flush()  # Flush changes to database session
+
+                    # store calendar events
+
+                    if "calendar" in student_info and student_info["calendar"]:
+                        calendar_payload = student_info["calendar"]
+                        await save_course_schedule(db, user_id, calendar_payload)
+
                 else:
-                    logger.warning(f"SYNC SAVE: User {user_id} not found for academic info update")
-            
+                    logger.warning(
+                        f"SYNC SAVE: User {user_id} not found for academic info update"
+                    )
+
             terms_data = sas_data.get("terms", [])
             logger.info(
                 f"SYNC SAVE: Processing {len(terms_data)} SAS terms/grades for user {user_id}"
@@ -1133,6 +1354,271 @@ async def save_initial_scraped_data(
     logger.info(
         f"SYNC SAVE: Finished processing initial scraped data for user {user_id}"
     )
+
+
+def fetch_calendar_sas_info(credentials: SASCredentials):
+
+    session = requests.Session()
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    # Step 1: Start at Moodle login page to trigger redirects
+    moodle_login_url = "https://ban.mona.uwi.edu:9077/ssb8x/twbkwbis.P_WWWLogin"
+    # initial_response = session.get(moodle_login_url, headers=headers, allow_redirects=True)
+    initial_response = session.get(
+        moodle_login_url, headers=headers, allow_redirects=True
+    )
+
+    if initial_response.history:
+        print("Redirect history:")
+        for resp in initial_response.history:
+            print(f"{resp.status_code} -> {resp.url}")
+        print(f"Final URL: {initial_response.url}")
+
+    # Step 2: Let redirects take us to the UWI Identity login page
+    soup = BeautifulSoup(initial_response.text, "html.parser")
+    session_data_key_input = soup.find("input", {"name": "sessionDataKey"})
+
+    if not session_data_key_input:
+        return {
+            "success": False,
+            "message": "Failed to extract sessionDataKey. UWI SSO might have changed.",
+        }
+
+    session_data_key = session_data_key_input.get("value")
+
+    # Step 3: Prepare login form data
+    login_url = "https://ban.mona.uwi.edu:9443/commonauth"
+    form_data = {
+        "usernameUserInput": credentials.username,
+        "username": f"{credentials.username}@carbon.super",
+        "password": credentials.password,
+        "sessionDataKey": session_data_key,
+        # "chkRemember": "on"
+    }
+
+    headers_form = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0",
+    }
+
+    # Step 4: Submit login POST request
+    login_response = session.post(
+        login_url, data=form_data, headers=headers_form, allow_redirects=True
+    )
+
+    if login_response.history:
+        print("Redirect history:")
+        for resp in login_response.history:
+            print(f"{resp.status_code} -> {resp.url}")
+        print(f"Final URL: {login_response.url}")
+
+    # Confirm we're logged in
+    if "General Menu" in login_response.text or "bmenu.P_MainMnu" in login_response.url:
+        print("Login successful!")
+    else:
+        print("Login may have failed. Check response.")
+
+    term_submit_page = "https://ban.mona.uwi.edu:9077/ssb8x/bwskflib.P_SelDefTerm"
+
+    term_submit_resp = session.get(term_submit_page, headers=headers)
+    term_soup = BeautifulSoup(term_submit_resp.text, "html.parser")
+
+    term_hidden_inputs = term_soup.find("input", {"name": "name_var"})
+    term_hidden_value = term_hidden_inputs.get("value")
+
+    term_select = "202420"  # hardcoded for now, but can be dynamic if needed, represents 2025/2026 semester 2
+
+    term_payload = {
+        "name_var": term_hidden_value,
+        "term_in": term_select,
+    }
+
+    student_registration_page = "https://ban.mona.uwi.edu:9077/ssb8x/bwcklibs.P_StoreTerm"  # leads to this page after the post request from the term submisison page
+
+    student_registration_resp = session.post(
+        student_registration_page, data=term_payload, headers=headers_form
+    )
+
+    target_page = "https://ban.mona.uwi.edu:9077/ssb8x/bwskfshd.P_CrseSchdDetl"
+
+    result_target_page = session.get(target_page, headers=headers)
+    # print("text of target page, ", result_target_page.text)
+    # print("Current URL: ", result_target_page.url)
+
+    # 1. Status code + final URL
+    print("→ Status code:", result_target_page.status_code)
+    print("→ Final URL:  ", result_target_page.url)
+
+    # 2. Redirect history
+    if result_target_page.history:
+        print("→ Redirect chain:")
+        for resp in result_target_page.history:
+            print("   ", resp.status_code, resp.url)
+    else:
+        print("→ No redirects")
+
+    target_soup = BeautifulSoup(result_target_page.text, "html.parser")
+
+    # Option A: Look for the “Total Credit Hours” text
+    if "Total Credit Hours" in result_target_page.text:
+        print("✅ Found ‘Total Credit Hours’ – looks like the right page")
+    else:
+        print("❌ ‘Total Credit Hours’ not found – wrong page or not logged in")
+
+    # Option B: Look for the very first <caption class="captiontext">
+    first_caption = target_soup.find("caption", class_="captiontext")
+    if first_caption:
+        print("✅ First caption:", first_caption.get_text(strip=True))
+    else:
+        print("❌ No <caption class='captiontext'> – schedule tables missing")
+
+    def parse_course_schedules(soup: BeautifulSoup):
+        print("Starting parse_course_schedules()")
+
+        # 0. Gather all the tables
+        all_tables = soup.find_all("table", class_="datadisplaytable")
+        print(f"Total datadisplaytable tables found: {len(all_tables)}")
+        for idx, tbl in enumerate(all_tables, 1):
+            summary = tbl.get("summary", "<no summary>")
+            caption_tag = tbl.find("caption")
+            caption = (
+                caption_tag.get_text(strip=True) if caption_tag else "<no caption>"
+            )
+            print(f" Table #{idx}: summary={summary!r}, caption={caption!r}")
+
+        # 1. Identify the “detail” tables (everything except the Meeting Times tables)
+        detail_tables = [
+            tbl
+            for tbl in all_tables
+            if tbl.find("caption")
+            and tbl.find("caption").get_text(strip=True) != "Scheduled Meeting Times"
+        ]
+        print(f"Filtered detail tables: {len(detail_tables)}")
+
+        courses = {}
+
+        for i, detail in enumerate(detail_tables, 1):
+            raw_caption = detail.find("caption").get_text(strip=True)
+            print(f"\n--- Detail table #{i}: caption = {raw_caption!r} ---")
+
+            # split "Data Science Principles - COMP 3162 - B01"
+            parts = [p.strip() for p in raw_caption.split(" - ")]
+            if len(parts) != 3:
+                print(f" WARNING: caption didn’t split into 3 parts: {parts}")
+                continue
+            course_title, course_code, section = parts
+            print(
+                f" Parsed → title={course_title!r}, code={course_code!r}, section={section!r}"
+            )
+
+            # grab Level & Campus
+            def get_field(label):
+                th = detail.find(
+                    "th", string=lambda txt: txt and label.lower() in txt.lower()
+                )
+                if not th:
+                    print(f"  {label!r} not found")
+                    return None
+                td = th.find_next_sibling(["td", "TD"])
+                text = td.get_text(strip=True)
+                print(f"  {label!r} → {text}")
+                return text
+
+            level = get_field("Level:")
+            campus = get_field("Campus:")
+
+            # 2. Find the very next table as the schedule table
+            next_idx = all_tables.index(detail) + 1
+            if next_idx >= len(all_tables):
+                print("WARNING: No next table for Meeting Times")
+                continue
+            sched_tbl = all_tables[next_idx]
+            sched_caption = sched_tbl.find("caption").get_text(strip=True)
+            if sched_caption != "Scheduled Meeting Times":
+                print(
+                    f"WARNING: Expected 'Scheduled Meeting Times' but got {sched_caption!r}"
+                )
+                continue
+            print("  Found corresponding schedule table")
+
+            # 3. Map headers → indices
+            headers = [
+                th.get_text(strip=True) for th in sched_tbl.find("tr").find_all("th")
+            ]
+            print(f"  Schedule headers: {headers}")
+            idx_map = {h: j for j, h in enumerate(headers)}
+
+            # 4. Parse each row
+            for ridx, row in enumerate(sched_tbl.find_all("tr")[1:], start=1):
+                cols = row.find_all("td")
+                raw_cols = [c.get_text(strip=True) for c in cols]
+                print(f"  Row #{ridx} raw: {raw_cols}")
+
+                def parse_time_range(time_str):
+                    try:
+                        start, end = [t.strip() for t in time_str.split("-")]
+                        return start, end
+                    except Exception:
+                        return None, None
+
+                def parse_date_range(date_range_str):
+                    try:
+                        start_str, end_str = [
+                            d.strip() for d in date_range_str.split("-")
+                        ]
+                        start_date = datetime.strptime(start_str, "%b %d, %Y").date()
+                        end_date = datetime.strptime(end_str, "%b %d, %Y").date()
+                        return start_date, end_date
+                    except Exception:
+                        return None, None
+
+                time_str = cols[idx_map["Time"]].get_text(strip=True)
+                date_range_str = cols[idx_map["Date Range"]].get_text(strip=True)
+
+                start_time, end_time = parse_time_range(time_str)
+                start_date, end_date = parse_date_range(date_range_str)
+
+                # build your entry
+                entry = {
+                    "instructor": cols[idx_map["Instructors"]].get_text(strip=True),
+                    "level": level,
+                    # this is the column “Schedule Type” (Lab/Lecture/etc)
+                    "session_type": cols[idx_map["Schedule Type"]].get_text(strip=True),
+                    "campus": campus,
+                    "where": cols[idx_map["Where"]]
+                    .get_text(strip=True)
+                    .replace("Located:", "")
+                    .strip(),
+                    "date_range": date_range_str,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "time": time_str,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                }
+                print(f"  Parsed entry: {entry}")
+
+                # 5. Group into our courses dict
+                courses.setdefault(course_code, {"title": course_title, "sections": {}})
+                courses[course_code]["sections"].setdefault(section, [])
+                courses[course_code]["sections"][section].append(entry)
+
+        print(f"\nFinished parsing: found {len(courses)} course(s)")
+        return courses
+
+    # Now, only if those checks pass, you can call your parse_course_schedules()
+    if (
+        result_target_page.status_code == 200
+        and not result_target_page.history
+        and first_caption
+    ):
+        course_schedules = parse_course_schedules(target_soup)
+        print(f"Parsed {len(course_schedules)} schedule entries")
+    else:
+        raise RuntimeError("Failed to load the schedule‐detail page – aborting parse.")
+
+    return course_schedules
 
 
 def fetch_extra_sas_info(credentials: SASCredentials):
