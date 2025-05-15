@@ -62,3 +62,24 @@ export interface CreateSlotsRequest {
     end_time: string; // ISO date string
   }[];
 }
+
+export interface AdminBookingWithStudent {
+  id: number;
+  admin_id: number;
+  start_time: string; // ISO date string
+  end_time: string; // ISO date string
+  is_booked: boolean;
+  booking: {
+    id: number;
+    slot_id: number;
+    student_id: number;
+    created_at: string; // ISO date string
+    student: {
+      id: number;
+      firstname: string;
+      lastname: string;
+      email: string;
+      student_id: string;
+    }
+  } | null;
+}

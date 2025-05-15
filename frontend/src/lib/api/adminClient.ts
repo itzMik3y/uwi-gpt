@@ -7,7 +7,7 @@ import {
   CreateSlotsRequest,
   AdminSlotWithBooking
 } from '@/types/admin';
-
+import { AdminBookingWithStudent } from '@/types/admin';
 // Token storage keys
 export const ADMIN_TOKEN_STORAGE_KEY = 'uwi_admin_access_token';
 export const ADMIN_REFRESH_TOKEN_STORAGE_KEY = 'uwi_admin_refresh_token';
@@ -490,6 +490,24 @@ export class AdminApiClient {
       return false;
     }
   }
+
+  /**
+ * Get bookings with student details for the current admin
+ */
+public async getAdminBookingDetails(): Promise<AdminBookingWithStudent[]> {
+  if (!this.isAuthenticated()) {
+    throw new Error('Authentication required. Please log in first.');
+  }
+
+  try {
+    const response = await this.client.get<AdminBookingWithStudent[]>(
+      '/moodle/scheduler/bookings/admin'
+    );
+    return response.data;
+  } catch (error) {
+    throw this.normalizeError(error);
+  }
+}
 }
 
 // Create and export a singleton instance

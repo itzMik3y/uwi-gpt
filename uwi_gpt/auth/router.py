@@ -24,6 +24,8 @@ from user_db.schemas import (
     UserTokenOut,
     UserCreate,
 )
+from user_db.models import Booking, User_Session
+
 from user_db.services import (
     blacklist_admin_token,
     blacklist_all_admin_tokens,
@@ -62,7 +64,7 @@ from .models import (
     CourseOutMinimal,
     CourseGradeOutMinimal,
 )
-
+from sqlalchemy.orm import selectinload 
 # v-- Import Auth Utils --v
 from .utils import (
     create_access_token,
@@ -159,6 +161,7 @@ async def check_user_credentials(
     return user, "SUCCESS"
 
 
+# --- Combined Login/Register Token Endpoint (Synchronous Data Saving) ---
 # --- Combined Login/Register Token Endpoint (Synchronous Data Saving) ---
 @router.post(
     "/token", response_model=Token, summary="Login or Register (Populates Data Sync)"
@@ -765,7 +768,103 @@ async def read_admin_me(
         )
         raise HTTPException(status_code=500, detail="Error processing admin data.")
 
+@router.delete("/account/delete", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_current_user_account(
+    current_user_dependency: User | Admin = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Allows an authenticated user to delete their own account and all associated personal information.
+    This action is irreversible.
+    Admins should use a different mechanism if they need to be deleted.
+    """
+    if not isinstance(current_user_dependency, User):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint is for user self-deletion only. Admins cannot use this."
+        )
 
+    user_to_delete: User = current_user_dependency
+    user_id = user_to_delete.id # For logging
+    user_email = user_to_delete.email # For logging
+
+    logger.info(f"Initiating account deletion for user ID: {user_id} ({user_email})")
+
+    try:
+        # Note: `get_current_account` in your `auth/utils.py` already eager loads `imported_sessions`.
+        # It does NOT eager load `User.bookings`.
+
+        # 1. Handle User.imported_sessions (many-to-many via User_Session table)
+        # Clearing the collection manages the association table entries.
+        if user_to_delete.imported_sessions:
+            logger.info(f"User {user_id} has {len(user_to_delete.imported_sessions)} imported calendar sessions to clear.")
+            user_to_delete.imported_sessions.clear()
+            logger.info(f"Cleared imported_sessions for user ID: {user_id}")
+        else:
+            logger.info(f"User {user_id} has no imported_sessions to clear.")
+
+        # 2. Handle User.bookings and update associated AvailabilitySlot.is_booked
+        # User.bookings relationship does not have cascade="all, delete-orphan" in your User model.
+        # Fetch bookings with their slots.
+        stmt_bookings = (
+            select(Booking)
+            .where(Booking.student_id == user_id)
+            .options(selectinload(Booking.slot)) # Eager load the slot for updating
+        )
+        result_bookings = await db.execute(stmt_bookings)
+        user_bookings_to_delete = result_bookings.scalars().all()
+
+        if user_bookings_to_delete:
+            logger.info(f"User {user_id} has {len(user_bookings_to_delete)} bookings to process.")
+            for booking in user_bookings_to_delete:
+                if booking.slot:
+                    logger.info(f"Updating slot {booking.slot.id} (booked by user {user_id}) to is_booked=False.")
+                    booking.slot.is_booked = False
+                    db.add(booking.slot) # Add slot to session for update (will be part of the commit)
+                else:
+                    logger.warning(f"Booking {booking.id} for user {user_id} has no associated slot, cannot update is_booked status.")
+                
+                logger.info(f"Marking booking {booking.id} for user {user_id} for deletion.")
+                await db.delete(booking) # Mark booking for deletion
+            logger.info(f"Processed {len(user_bookings_to_delete)} bookings for user ID: {user_id}.")
+        else:
+            logger.info(f"User {user_id} has no bookings to process.")
+
+        # 3. Delete the User object itself.
+        # SQLAlchemy's `cascade="all, delete-orphan"` on the User model's relationships
+        # will handle the deletion of associated records for:
+        # - User.tokens (UserToken objects)
+        # - User.terms (Term objects)
+        # - User.enrollments (EnrolledCourse objects)
+        # - User.grades (CourseGrade objects)
+        logger.info(f"Marking user object {user_id} ({user_email}) for deletion.")
+        await db.delete(user_to_delete)
+
+        # 4. Commit the transaction
+        # This will execute all pending operations:
+        # - Deletion of the User object.
+        # - Cascaded deletions (tokens, terms, enrollments, grades).
+        # - Explicit deletions (cleared imported_sessions associations, deleted bookings).
+        # - Updates (availability slots marked as not booked).
+        await db.commit()
+        logger.info(f"Successfully deleted user ID: {user_id} ({user_email}) and their associated data.")
+
+    except HTTPException:
+        # If an HTTPException was raised by this function's logic (e.g., the 403 check)
+        await db.rollback() # Rollback any changes made before the HTTPException
+        logger.warning(f"HTTPException during account deletion for user ID: {user_id}. Rolled back transaction if any operations were pending.")
+        raise # Re-raise the HTTPException
+    except Exception as e:
+        await db.rollback() # Rollback on any other unexpected error
+        logger.error(f"Unexpected error during account deletion for user ID: {user_id} ({user_email}): {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while deleting your account. Please try again or contact support."
+        )
+
+    # No explicit return is needed for HTTP 204 No Content
+    # FastAPI handles the response based on the status_code.
+    
 @router.get("/sessions", response_model=List[UserTokenOut])
 async def get_active_sessions(
     db: AsyncSession = Depends(get_db),

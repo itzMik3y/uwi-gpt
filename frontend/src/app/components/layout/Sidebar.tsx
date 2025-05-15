@@ -39,39 +39,41 @@ export function Sidebar() {
       label: "Dashboards",
       icon: <LayoutDashboard className="h-5 w-5" />,
       submenu: [
-        { label: "Option 1", path: "/dashboards/option1" },
-        { label: "Option 2", path: "/dashboards/option2" },
+        { label: "Chat", path: "/chat" },
+        { label: "Schedule Meeting with Advisor", path: "/schedule" },
+        { label: "View Reports", path: "/reports" },
+        { label: "Academic Plan", path: "/academic-plan" },
       ]
     },
-    {
-      path: "/segments",
-      label: "Segments",
-      icon: <Users className="h-5 w-5" />,
-      submenu: [
-        { label: "Option 1", path: "/segments/option1" },
-        { label: "Option 2", path: "/segments/option2" },
-      ]
-    },
+    // {
+    //   path: "/segments",
+    //   label: "Segments",
+    //   icon: <Users className="h-5 w-5" />,
+    //   submenu: [
+    //     { label: "Option 1", path: "/segments/option1" },
+    //     { label: "Option 2", path: "/segments/option2" },
+    //   ]
+    // },
     {
       path: "/account",
       label: "Account",
       icon: <User className="h-5 w-5" />,
       submenu: [
-        { label: "Option 1", path: "/account/option1" },
-        { label: "Option 2", path: "/account/option2" },
+        { label: "Profile", path: "/profile" },
+        // { label: "Option 2", path: "/account/option2" },
       ]
     },
-    {
-      path: "/settings",
-      label: "Settings",
-      icon: <Settings className="h-5 w-5" />,
-      submenu: [
-        { label: "Option 1", path: "/settings/option1" },
-        { label: "Option 2", path: "/settings/option2" },
-        { label: "Option 3", path: "/settings/option3" },
-        { label: "Option 4", path: "/settings/option4" },
-      ]
-    },
+    // {
+    //   path: "/settings",
+    //   label: "Settings",
+    //   icon: <Settings className="h-5 w-5" />,
+    //   submenu: [
+    //     { label: "Option 1", path: "/settings/option1" },
+    //     { label: "Option 2", path: "/settings/option2" },
+    //     { label: "Option 3", path: "/settings/option3" },
+    //     { label: "Option 4", path: "/settings/option4" },
+    //   ]
+    // },
   ]
 
   const toggleSidebar = () => {

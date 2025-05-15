@@ -1259,7 +1259,70 @@ const DegreePlannerContent: React.FC = () => {
     setYearData(initialYearData);
   };
 
-
+  // Add this function to export plan as Excel
+const exportToExcel = () => {
+  try {
+    // Import SheetJS
+    import('xlsx').then(XLSX => {
+      // Create worksheet data from plan
+      const workbookData = [];
+      
+      // Add headers
+      workbookData.push(['Academic Year', 'Semester', 'Course Code', 'Course Title', 'Credits', 'Status', 'Grade']);
+      
+      // Add data for each course in the plan
+      yearData.forEach(year => {
+        year.semesters.forEach(semester => {
+          const semesterName = semester.number === 1 ? 'Semester I' : 
+                               semester.number === 2 ? 'Semester II' : 'Summer School';
+          
+          if (semester.courses.length === 0) {
+            // Add empty row for semester with no courses
+            workbookData.push([year.academicYear, semesterName, '', '', '', '', '']);
+          } else {
+            semester.courses.forEach(course => {
+              workbookData.push([
+                year.academicYear,
+                semesterName,
+                course.code,
+                course.title,
+                course.credits,
+                course.status,
+                course.grade || ''
+              ]);
+            });
+          }
+        });
+      });
+      
+      // Create worksheet and workbook
+      const ws = XLSX.utils.aoa_to_sheet(workbookData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Degree Plan');
+      
+      // Set column widths for better readability
+      const colWidths = [
+        { wch: 15 }, // Academic Year
+        { wch: 12 }, // Semester
+        { wch: 12 }, // Course Code
+        { wch: 40 }, // Course Title
+        { wch: 8 },  // Credits
+        { wch: 12 }, // Status
+        { wch: 8 }   // Grade
+      ];
+      
+      ws['!cols'] = colWidths;
+      
+      // Create Excel file and trigger download
+      XLSX.writeFile(wb, 'Academic_Degree_Plan.xlsx');
+      
+      toast.success('Your academic plan has been exported to Excel');
+    });
+  } catch (error) {
+    console.error('Excel export error:', error);
+    toast.error('Failed to export Excel file: ' + error.message);
+  }
+};
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQuery(searchQuery), 500);
     return () => clearTimeout(timer);
@@ -2013,10 +2076,11 @@ const handleRemoveCourse = (courseId: string, semesterId: string) => {
           label="Reconstruct Transcript & Submit" 
           onClick={handleReconstructTranscript} 
         />
-            <ActionButton icon={<Copy className="h-4 w-4" />} label="Clone Current Plan" onClick={() => alert("Clone plan: Not implemented")} />
-            <ActionButton icon={<FileCheck className="h-4 w-4" />} label="GPA Simulator" onClick={() => alert("GPA Simulator: Not implemented")} />
-            <ActionButton icon={<Share2 className="h-4 w-4" />} label="Share with Advisor" onClick={() => alert("Share: Not implemented")} />
-            <ActionButton icon={<FileText className="h-4 w-4" />} label="Download PDF" onClick={() => alert("Download PDF: Not implemented")} />
+            {/* <ActionButton icon={<Copy className="h-4 w-4" />} label="Clone Current Plan" onClick={() => alert("Clone plan: Not implemented")} /> */}
+            {/* <ActionButton icon={<FileCheck className="h-4 w-4" />} label="GPA Simulator" onClick={() => alert("GPA Simulator: Not implemented")} /> */}
+            {/* <ActionButton icon={<Share2 className="h-4 w-4" />} label="Share with Advisor" onClick={() => alert("Share: Not implemented")} /> */}
+            {/* <ActionButton icon={<FileText className="h-4 w-4" />} label="Download PDF" onClick={() => alert("Download PDF: Not implemented")} /> */}
+            <ActionButton icon={<FileText className="h-4 w-4" />} label="Export to Excel" onClick={exportToExcel} />
           </div>
         </div>
       </div>
