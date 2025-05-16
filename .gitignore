@@ -39,6 +39,8 @@ node_modules/
 
 #cache
 uwi_gpt/rag_api/docs_state.json
+uwi_gpt/rag_api/course_state.json
+
 
 
 #frontend bun

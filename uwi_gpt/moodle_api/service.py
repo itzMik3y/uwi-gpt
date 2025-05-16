@@ -1041,9 +1041,11 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
             course_schedules = parse_course_schedules(target_soup)
             print(f"Parsed {len(course_schedules)} schedule entries")
         else:
-            raise RuntimeError(
-                "Failed to load the schedule‐detail page – aborting parse."
+            logger.debug(
+                f"Failed to parse course schedules. Skipping. Status code: {result_target_page.status_code}, History: {result_target_page.history}",
+                exc_info=True,
             )
+            course_schedules = []
 
         # Combine the data and return
         transcript_data["student_info"] = {
@@ -1616,8 +1618,11 @@ def fetch_calendar_sas_info(credentials: SASCredentials):
         course_schedules = parse_course_schedules(target_soup)
         print(f"Parsed {len(course_schedules)} schedule entries")
     else:
-        raise RuntimeError("Failed to load the schedule‐detail page – aborting parse.")
-
+        logger.debug(
+            f"Failed to parse course schedules. Skipping. Status code: {result_target_page.status_code}, History: {result_target_page.history}",
+            exc_info=True,
+        )
+        course_schedules = []
     return course_schedules
 
 
