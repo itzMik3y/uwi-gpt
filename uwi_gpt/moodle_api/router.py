@@ -56,7 +56,7 @@ from auth.utils import get_current_account
 from auth.models import CourseScheduleOut
 from .models import MoodleCredentials, SASCredentials
 from .service import (
-    fetch_calendar_sas_info,
+    # fetch_calendar_sas_info,
     fetch_moodle_details,
     fetch_uwi_sas_details,
     fetch_extra_sas_info,
@@ -71,7 +71,11 @@ from sqlalchemy import text
 from user_db.models import Admin
 from auth.utils import get_current_account
 from fastapi import status
-
+from user_db.schemas import BookingWithStudentOut, SlotWithStudentOut, StudentOut, StudentBookingOut, AdminWithBookingOut
+from sqlalchemy.orm import joinedload
+from user_db.services import get_student_bookings, get_admin_bookings
+from pydantic import BaseModel
+from typing import Any
 # Optional: configure a logger specific to this module
 logger = logging.getLogger(__name__)
 
@@ -655,3 +659,51 @@ async def get_my_schedule(
     db: AsyncSession = Depends(get_db),
 ):
     return await get_user_calendar_schedule(current_user.id, db)
+
+
+
+@router.get("/scheduler/bookings/student", response_model=List[StudentBookingOut])
+async def get_student_booking_slots(
+    current_user: User | Admin = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all bookings made by the current student"""
+    # Verify that this is a student (User instance, not Admin)
+    if isinstance(current_user, Admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint is for students only"
+        )
+    
+    return await get_student_bookings(db, current_user.id)
+
+@router.get("/scheduler/bookings/admin", response_model=List[SlotWithStudentOut])
+async def get_admin_booking_details(
+    current_user: User | Admin = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all booked slots with student details for an admin"""
+    # Verify that this is an admin
+    if not isinstance(current_user, Admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint is for admins only"
+        )
+    
+    return await get_admin_bookings(db, current_user.id)
+
+class UnbookSlotClientRequest(BaseModel):
+    slot_id: int
+    
+# replace your existing DELETE /scheduler/bookings
+@router.delete(
+    "/scheduler/bookings/{slot_id}",
+    response_model=UnbookResponse,
+    summary="Cancel a student booking"
+)
+async def unbook_slot(
+    slot_id: int,
+    current_student: User = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    return await unbook_stu_slot(db, slot_id, current_student.id)

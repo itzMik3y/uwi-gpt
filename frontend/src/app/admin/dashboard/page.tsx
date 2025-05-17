@@ -6,8 +6,9 @@ import { useRouter } from "next/navigation";
 import { Layout } from "@/app/components/layout/Layout";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchAdminData, createSlots } from "@/store/slices/adminAuthSlice";
-import { ChevronLeft, ChevronRight } from "lucide-react";
-import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, addMonths, subMonths, parseISO, isAfter, differenceInHours } from "date-fns";
+import { ChevronLeft, ChevronRight, Users, Info } from "lucide-react";
+import Link from "next/link";
+import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, addMonths, subMonths, parseISO, isAfter, differenceInHours, isToday } from "date-fns";
 
 export default function AdminDashboardPage() {
   const dispatch = useAppDispatch();
@@ -19,6 +20,9 @@ export default function AdminDashboardPage() {
   // modal state
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ date: "", startTime: "", endTime: "" });
+  // slot info modal
+  const [selectedSlot, setSelectedSlot] = useState<any>(null);
+  const [showSlotInfoModal, setShowSlotInfoModal] = useState(false);
 
   // guard
   useEffect(() => {
@@ -85,13 +89,22 @@ export default function AdminDashboardPage() {
   return (
     <Layout>
       <div className="container mx-auto p-6 space-y-8">
-        <div>
-          <h1 className="text-3xl font-bold">
-            Welcome, {admin.firstname} {admin.lastname}
-          </h1>
-          <p className="text-gray-600">
-            {admin.is_superadmin ? "Super Admin" : "Administrator"} | {admin.email}
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-3xl font-bold">
+              Welcome, {admin.firstname} {admin.lastname}
+            </h1>
+            <p className="text-gray-600">
+              {admin.is_superadmin ? "Super Admin" : "Administrator"} | {admin.email}
+            </p>
+          </div>
+          <Link
+            href="/admin/bookings"
+            className="mt-4 sm:mt-0 flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            <Users className="h-5 w-5 mr-2" />
+            Student Appointments
+          </Link>
         </div>
 
         {/* Summary Cards */}
@@ -179,29 +192,52 @@ export default function AdminDashboardPage() {
                 format(parseISO(s.start_time!), "yyyy-MM-dd") === iso
               );
               const isCurrent = day.getMonth() === currentMonth.getMonth();
+              const isCurrentDay = isToday(day);
+              
               return (
                 <div
                   key={i}
                   className={`h-32 border p-2 flex flex-col ${
-                    isCurrent ? "bg-white" : "bg-gray-50 text-gray-400"
+                    isCurrent 
+                      ? isCurrentDay 
+                        ? "bg-blue-50" 
+                        : "bg-white" 
+                      : "bg-gray-50 text-gray-400"
                   }`}
                 >
-                  <div className="text-sm font-semibold">{format(day, "d")}</div>
+                  <div className={`text-sm font-semibold ${isCurrentDay ? "text-blue-600" : ""}`}>
+                    {format(day, "d")}
+                  </div>
                   <div className="mt-1 space-y-1 text-xs overflow-y-auto">
                     {daySlots.map(s => {
                       const start = format(parseISO(s.start_time!), "h:mm a");
                       const end   = format(parseISO(s.end_time!),   "h:mm a");
+                      
                       return (
-                        <div
+                        <button
                           key={s.id}
-                          className={`px-1 py-0.5 rounded ${
+                          onClick={() => {
+                            setSelectedSlot(s);
+                            setShowSlotInfoModal(true);
+                          }}
+                          className={`w-full text-left px-1 py-0.5 rounded flex items-center justify-between ${
                             s.is_booked
-                              ? "bg-blue-100 text-blue-800"
-                              : "bg-green-100 text-green-800"
+                              ? "bg-blue-100 text-blue-800 hover:bg-blue-200"
+                              : "bg-green-100 text-green-800 hover:bg-green-200"
                           }`}
                         >
-                          {start} – {end}
-                        </div>
+                          <span>
+                            {start} – {end}
+                            {s.is_booked && s.booking?.student && (
+                              <span className="block text-xs truncate">
+                                {s.booking.student.firstname} {s.booking.student.lastname}
+                              </span>
+                            )}
+                          </span>
+                          {s.is_booked && (
+                            <Info className="h-3.5 w-3.5 flex-shrink-0" />
+                          )}
+                        </button>
                       );
                     })}
                   </div>
@@ -260,6 +296,87 @@ export default function AdminDashboardPage() {
                 >
                   Add Time Slot
                 </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Slot Info Modal */}
+      {showSlotInfoModal && selectedSlot && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl p-6 w-96 max-w-md">
+            <h3 className="text-lg font-semibold mb-4">
+              {selectedSlot.is_booked ? "Booked Appointment" : "Available Time Slot"}
+            </h3>
+            <div className="space-y-3">
+              <div>
+                <div className="text-sm text-gray-600">Date</div>
+                <div className="font-medium">
+                  {format(parseISO(selectedSlot.start_time), "EEEE, MMMM d, yyyy")}
+                </div>
+              </div>
+              <div>
+                <div className="text-sm text-gray-600">Time</div>
+                <div className="font-medium">
+                  {format(parseISO(selectedSlot.start_time), "h:mm a")} - {format(parseISO(selectedSlot.end_time), "h:mm a")}
+                </div>
+              </div>
+              
+              {selectedSlot.is_booked && selectedSlot.booking?.student ? (
+                <div className="border-t pt-3 mt-3">
+                  <div className="text-sm font-semibold text-gray-700 mb-2">Student Information</div>
+                  <div className="space-y-2">
+                    <div>
+                      <div className="text-sm text-gray-600">Name</div>
+                      <div className="font-medium">
+                        {selectedSlot.booking.student.firstname} {selectedSlot.booking.student.lastname}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-600">Student ID</div>
+                      <div className="font-medium">
+                        {selectedSlot.booking.student.student_id}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-600">Email</div>
+                      <div className="font-medium">
+                        {selectedSlot.booking.student.email}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-600">Booked On</div>
+                      <div className="font-medium">
+                        {format(parseISO(selectedSlot.booking.created_at), "MMM d, yyyy 'at' h:mm a")}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : selectedSlot.is_booked ? (
+                <div className="text-amber-600 mt-2">
+                  Student information not available. View complete details in the Student Appointments page.
+                </div>
+              ) : null}
+              
+              <div className="flex justify-end space-x-2 pt-4 mt-2">
+                <button
+                  className="px-4 py-2 border rounded-lg hover:bg-gray-50"
+                  onClick={() => {
+                    setSelectedSlot(null);
+                    setShowSlotInfoModal(false);
+                  }}
+                >
+                  Close
+                </button>
+                {selectedSlot.is_booked && (
+                  <Link
+                    href="/admin/bookings"
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  >
+                    View All Bookings
+                  </Link>
+                )}
               </div>
             </div>
           </div>

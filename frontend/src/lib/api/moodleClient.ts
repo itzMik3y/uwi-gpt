@@ -7,8 +7,11 @@ import {
   MoodleLoginRequest,
   CombinedLoginResponse,
   MoodleErrorResponse,
-  AuthResponse
+  AuthResponse,
+  UnbookResponse,
 } from '@/types/moodle';
+import { StudentBooking } from '@/types/moodle';
+
 
 // Token storage keys
 export const TOKEN_STORAGE_KEY = 'uwi_access_token';
@@ -317,6 +320,94 @@ export class MoodleApiClient {
       data: error,
     };
   }
+    /**
+   * Get available appointment slots
+   */
+  public async getAvailableSlots(): Promise<any[]> {
+    if (!this.isAuthenticated()) {
+      throw new Error('Authentication required. Please log in first.');
+    }
+
+    try {
+      const response = await this.client.get<any[]>(
+        '/moodle/scheduler/slots/available'
+      );
+      return response.data;
+    } catch (error) {
+      throw this.normalizeError(error);
+    }
+  }
+
+  /**
+   * Book an appointment slot
+   */
+  public async bookSlot(slotId: number): Promise<any> {
+    if (!this.isAuthenticated()) {
+      throw new Error('Authentication required. Please log in first.');
+    }
+
+    try {
+      const response = await this.client.post(
+        '/moodle/scheduler/bookings',
+        { slot_id: slotId }
+      );
+      return response.data;
+    } catch (error) {
+      throw this.normalizeError(error);
+    }
+  }
+
+  /**
+   * Get the current student's bookings
+   */
+  public async getStudentBookings(): Promise<StudentBooking[]> {
+    if (!this.isAuthenticated()) {
+      throw new Error('Authentication required. Please log in first.');
+    }
+
+    try {
+      const response = await this.client.get<StudentBooking[]>(
+        '/moodle/scheduler/bookings/student'
+      );
+      return response.data;
+    } catch (error) {
+      throw this.normalizeError(error);
+    }
+  }
+  /**
+ * Cancel a booking
+ */
+// src/lib/api/moodleClient.ts
+public async cancelBooking(slotId: number): Promise<UnbookResponse> {
+  if (!this.isAuthenticated()) {
+    throw new Error("Authentication required");
+  }
+  // DELETE /moodle/scheduler/bookings/{slotId}
+  const response = await this.client.delete<UnbookResponse>(
+    `/moodle/scheduler/bookings/${slotId}`
+  );
+  return response.data;
+}
+public async deleteAccount(): Promise<void> {
+  if (!this.isAuthenticated()) {
+    throw new Error('Authentication required. Please log in first.');
+  }
+
+  try {
+    await this.client.delete('/auth/account/delete');
+    // If the DELETE request is successful (204 No Content),
+    // the user's session and account are gone from the backend.
+    // Clear local tokens as well.
+    this.clearTokens();
+  } catch (error) {
+    // The error interceptor will handle 401s by trying to refresh.
+    // If refresh fails or it's another error, it will be thrown.
+    // If delete itself fails (e.g., 500), tokens might still be locally valid,
+    // but the account deletion failed. The error will be propagated.
+    throw this.normalizeError(error);
+  }
+}
+
 }
 
 // Create and export a singleton instance

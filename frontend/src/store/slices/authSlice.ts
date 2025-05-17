@@ -1,6 +1,6 @@
 // src/store/slices/authSlice.ts
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
-import { moodleApi, TOKEN_STORAGE_KEY, REFRESH_TOKEN_STORAGE_KEY, TOKEN_EXPIRY_KEY } from '@/lib/api/moodleClient';
+import { moodleApi } from '@/lib/api/moodleClient'; // TOKEN_STORAGE_KEY etc. are not directly used by thunks but by moodleApi
 import {
   MoodleLoginRequest,
   CombinedLoginResponse,
@@ -43,7 +43,7 @@ const initialState: AuthState = {
   error: null
 };
 
-// Login thunk - handles the initial login process
+// Login thunk
 export const loginUser = createAsyncThunk<
   AuthResponse,
   MoodleLoginRequest,
@@ -56,7 +56,7 @@ export const loginUser = createAsyncThunk<
   }
 });
 
-// Fetch user data thunk - gets user data after login
+// Fetch user data thunk
 export const fetchUserData = createAsyncThunk<
   CombinedLoginResponse,
   void,
@@ -69,26 +69,43 @@ export const fetchUserData = createAsyncThunk<
   }
 });
 
-// Check auth status thunk - verifies if the current token is valid
+// Check auth status thunk
 export const checkAuthStatus = createAsyncThunk<
   boolean,
   void,
-  { rejectValue: string }
+  { dispatch: any; rejectValue: string } // Added dispatch type for internal dispatch
 >('auth/checkStatus', async (_, { dispatch, rejectWithValue }) => {
   try {
-    // Check if access token exists and is valid
     if (!moodleApi.isAuthenticated()) {
       return false;
     }
-    
-    // Try to fetch user data to validate the token
-    await dispatch(fetchUserData());
+    await dispatch(fetchUserData()).unwrap(); // Use unwrap to ensure error propagates if fetchUserData fails
     return true;
   } catch (err: any) {
-    // If error occurs, token might be invalid
-    return false;
+    return false; // If any error during validation, consider not authenticated
   }
 });
+
+// New Thunk for Account Deletion
+export const deleteUserAccount = createAsyncThunk<
+  void, // Resolves with void on success
+  void, // No arguments needed
+  { dispatch: any; rejectValue: string } // Added dispatch type
+>(
+  'auth/deleteAccount',
+  async (_, { dispatch, rejectWithValue }) => {
+    try {
+      await moodleApi.deleteAccount();
+      // After moodleApi.deleteAccount() succeeds, tokens are cleared from localStorage.
+      // Now, dispatch logout() to clear the Redux state.
+      dispatch(logout());
+      // No explicit return value needed for void promise
+    } catch (err: any) {
+      return rejectWithValue(err?.message || 'Failed to delete account.');
+    }
+  }
+);
+
 
 const authSlice = createSlice({
   name: 'auth',
@@ -102,21 +119,18 @@ const authSlice = createSlice({
       state.authTokens = null;
       state.gradesData = null;
       state.gradesStatus = null;
-      state.isLoading = false;
+      state.isLoading = false; // Ensure loading is reset on logout
       state.error = null;
       
-      // Clear tokens from API client and localStorage
-      moodleApi.clearTokens();
+      moodleApi.clearTokens(); // This is already called by moodleApi.deleteAccount on success, but good to have for explicit logout action
     },
-    
-    // Mark authentication as initialized (whether successful or not)
     setAuthInitialized(state, action: PayloadAction<boolean>) {
       state.isAuthInitialized = action.payload;
     }
   },
   extraReducers: (builder) => {
-    // Login
     builder
+      // Login
       .addCase(loginUser.pending, (state) => {
         state.isLoading = true;
         state.error = null;
@@ -126,8 +140,6 @@ const authSlice = createSlice({
         state.isAuthenticated = true;
         state.error = null;
         state.isAuthInitialized = true;
-        
-        // Note: We don't set user data here yet - that happens in fetchUserData
       })
       .addCase(loginUser.rejected, (state, action) => {
         state.isLoading = false;
@@ -151,16 +163,16 @@ const authSlice = createSlice({
         state.user = moodle_data.user_info;
         state.courses = moodle_data.courses.courses;
         state.calendarEvents = moodle_data.calendar_events;
-        state.authTokens = moodle_data.auth_tokens;
+        // state.authTokens = moodle_data.auth_tokens; // Not typically stored directly in Redux if API client handles them
         state.gradesData = grades_data;
         state.gradesStatus = grades_status;
-        state.isAuthenticated = true;
+        state.isAuthenticated = true; 
       })
       .addCase(fetchUserData.rejected, (state, action) => {
         state.isLoading = false;
         state.error = action.payload || 'Failed to fetch user data';
-        
-        // Keep isAuthenticated unchanged here - only loginUser and logout should change this
+        // Do not change isAuthenticated here; only login/logout/explicit status check should.
+        // If token is invalid, checkAuthStatus or next API call will fail.
       })
       
       // Check Auth Status
@@ -170,28 +182,46 @@ const authSlice = createSlice({
       .addCase(checkAuthStatus.fulfilled, (state, action) => {
         state.isLoading = false;
         state.isAuthInitialized = true;
-        
-        // If status check returns false, we explicitly set isAuthenticated to false
-        if (!action.payload) {
+        if (!action.payload) { // If checkAuthStatus resolved to false
           state.isAuthenticated = false;
-          state.user = null;
+          state.user = null; // Clear user data if not authenticated
+          // Clear other sensitive data as well
           state.courses = null;
           state.calendarEvents = null;
-          state.authTokens = null;
           state.gradesData = null;
           state.gradesStatus = null;
+        } else {
+            state.isAuthenticated = true; // If fetchUserData succeeded within checkAuthStatus
         }
       })
-      .addCase(checkAuthStatus.rejected, (state) => {
+      .addCase(checkAuthStatus.rejected, (state) => { // Should ideally not happen if catch block returns false
         state.isLoading = false;
         state.isAuthenticated = false;
         state.isAuthInitialized = true;
         state.user = null;
-        state.courses = null;
+         state.courses = null;
         state.calendarEvents = null;
-        state.authTokens = null;
         state.gradesData = null;
         state.gradesStatus = null;
+      })
+
+      // Delete User Account
+      .addCase(deleteUserAccount.pending, (state) => {
+        state.isLoading = true;
+        state.error = null;
+      })
+      .addCase(deleteUserAccount.fulfilled, (state) => {
+        // The logout action dispatched within the thunk already resets state.
+        // state.isLoading will be false due to logout reducer.
+        // state.isAuthenticated will be false.
+        // state.user will be null.
+        // No need to duplicate state changes here.
+        state.error = null; // Ensure error is cleared on success
+      })
+      .addCase(deleteUserAccount.rejected, (state, action) => {
+        state.isLoading = false;
+        state.error = action.payload || 'Failed to delete account.';
+        // User remains authenticated if deletion failed; error is shown.
       });
   }
 });

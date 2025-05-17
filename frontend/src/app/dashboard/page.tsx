@@ -216,7 +216,7 @@ export default function Dashboard() {
           ))}
           
           {/* If no courses are available from the store, show placeholder courses */}
-          {courses.length === 0 && (
+          {/* {courses.length === 0 && (
             <>
               <div className="bg-white rounded-lg shadow">
                 <div className="p-4">
@@ -304,7 +304,7 @@ export default function Dashboard() {
                 </div>
               </div>
             </>
-          )}
+          )} */}
         </div>
       </div>
       

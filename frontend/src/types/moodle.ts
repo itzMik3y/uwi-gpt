@@ -172,3 +172,29 @@ export interface MoodleErrorResponse {
   debuginfo?: string;
   reproductionlink?: string;
 }
+
+export interface StudentBooking {
+  id: number;
+  slot_id: number;
+  student_id: number;
+  created_at: string; // ISO date string
+  slot: {
+    id: number;
+    admin_id: number;
+    start_time: string; // ISO date string
+    end_time: string; // ISO date string
+    is_booked: boolean;
+    admin?: {
+      id: number;
+      firstname: string;
+      lastname: string;
+      email: string;
+      login_id: number;
+    }
+  };
+}
+
+export interface UnbookResponse {
+  message: string;
+  slot_id: number;
+}

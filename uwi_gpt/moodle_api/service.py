@@ -1,5 +1,4 @@
 # moodle_api/service.py
-from datetime import datetime
 import os
 import re
 import json
@@ -16,8 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # from sqlalchemy.orm import sessionmaker
 import traceback
 
-from auth.models import CourseSchedule
-
 # Relative import for credentials models
 from .models import MoodleCredentials, SASCredentials
 from sqlalchemy.future import select
@@ -30,7 +27,6 @@ from user_db.services import (
     create_term,
     enroll_user_in_course,
     create_or_update_course_grade,
-    save_course_schedule,
 )
 from user_db.schemas import (
     CourseCreate,
@@ -778,6 +774,7 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
         transcript_data = parse_transcript_data(target_page.text)
 
         # ===== MAJOR/MINOR INFO RETRIEVAL =====
+        print("Fetching major/minor information...")
 
         # Submit term for accessing student details
         term_submit_page = "https://ban.mona.uwi.edu:9077/ssb8x/bwskflib.P_SelDefTerm"
@@ -791,7 +788,7 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
             student_info = {"Majors": [], "Minors": [], "Faculty": None}
         else:
             term_hidden_value = term_hidden_inputs.get("value")
-            term_select = "202420"  # hardcoded for now (2024/2025 semester 2)
+            term_select = "202520"  # hardcoded for now (2025/2026 semester 2)
 
             term_payload = {
                 "name_var": term_hidden_value,
@@ -1052,7 +1049,6 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
             "majors": student_info["Majors"],
             "minors": student_info["Minors"],
             "faculty": student_info["Faculty"],
-            "calendar": course_schedules,
         }
 
         return {
@@ -1259,15 +1255,7 @@ async def save_initial_scraped_data(
                     logger.info(
                         f"SYNC SAVE: Updated user {user_id} with academic program information"
                     )
-
                     await db.flush()  # Flush changes to database session
-
-                    # store calendar events
-
-                    if "calendar" in student_info and student_info["calendar"]:
-                        calendar_payload = student_info["calendar"]
-                        await save_course_schedule(db, user_id, calendar_payload)
-
                 else:
                     logger.warning(
                         f"SYNC SAVE: User {user_id} not found for academic info update"

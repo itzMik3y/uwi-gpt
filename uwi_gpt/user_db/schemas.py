@@ -23,6 +23,7 @@ class UserOut(BaseModel):
     majors: Optional[str] = None
     minors: Optional[str] = None
     faculty: Optional[str] = None
+    student_id: str
 
     class Config:
         from_attributes = True
@@ -242,3 +243,55 @@ class UnbookResponse(BaseModel):
 class UnbookRequest(BaseModel):
     student_id: int
     slot_id: int
+
+class StudentBookingOut(BaseModel):
+    id: int
+    slot_id: int
+    student_id: int
+    created_at: datetime
+    slot: SlotOut
+    
+    class Config:
+        from_attributes = True
+
+class AdminWithBookingOut(BaseModel):
+    id: int
+    firstname: str
+    lastname: str
+    email: str
+    login_id: int
+    
+    class Config:
+        from_attributes = True
+
+class StudentOut(BaseModel):
+    id: int
+    firstname: str
+    lastname: str
+    email: str
+    student_id: str
+    
+    class Config:
+        from_attributes = True
+
+class BookingWithStudentOut(BaseModel):
+    id: int
+    slot_id: int
+    student_id: int
+    created_at: datetime
+    student: StudentOut
+    
+    class Config:
+        from_attributes = True
+class SlotWithStudentOut(BaseModel):
+    id: int
+    admin_id: int
+    start_time: datetime
+    end_time: datetime
+    is_booked: bool
+    booking: Optional[BookingWithStudentOut] = None
+    
+    class Config:
+        from_attributes = True
+
+
