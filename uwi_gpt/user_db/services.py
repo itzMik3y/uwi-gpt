@@ -45,9 +45,13 @@ from .models import UserToken
 import time
 from .schemas import UserTokenCreate
 
-import logging # Add this if not already there
-logger = logging.getLogger(__name__) # Add this
-from sqlalchemy.orm import selectinload # Ensure selectinload is imported if used, though not directly in this func
+import logging  # Add this if not already there
+
+logger = logging.getLogger(__name__)  # Add this
+from sqlalchemy.orm import (
+    selectinload,
+)  # Ensure selectinload is imported if used, though not directly in this func
+
 
 def hash_token(token: str) -> str:
     """Create a secure hash of a token for storage"""
@@ -492,7 +496,7 @@ async def create_bulk_availability_slots(
     # Ensure admin_id is set (should be set from the token by the route handler)
     if not data.admin_id:
         raise HTTPException(status_code=400, detail="Admin ID is required")
-    
+
     # Check if admin exists
     result = await db.execute(select(Admin).where(Admin.id == admin_id))
     admin = result.scalars().first()
@@ -618,7 +622,9 @@ async def book_stu_slot(db: AsyncSession, slot_id: str, student_id: str):
 
 
 async def unbook_stu_slot(db: AsyncSession, slot_id: int, student_id: int):
-    logger.info(f"Service: unbook_stu_slot called with slot_id: {slot_id}, student_id: {student_id}")
+    logger.info(
+        f"Service: unbook_stu_slot called with slot_id: {slot_id}, student_id: {student_id}"
+    )
 
     # Find the booking
     result = await db.execute(
@@ -630,24 +636,36 @@ async def unbook_stu_slot(db: AsyncSession, slot_id: int, student_id: int):
     logger.info(f"Service: Found booking: {booking.id if booking else 'None'}")
 
     if not booking:
-        logger.warning(f"Service: Booking not found for slot_id: {slot_id}, student_id: {student_id}")
+        logger.warning(
+            f"Service: Booking not found for slot_id: {slot_id}, student_id: {student_id}"
+        )
         raise HTTPException(status_code=404, detail="Booking not found")
 
     # Update the slot to mark it as not booked
     # Ensure you are querying AvailabilitySlot by its primary key (slot_id which is booking.slot_id)
-    slot_to_update_id = booking.slot_id # or directly use the passed slot_id if it's guaranteed to be the AvailabilitySlot PK
+    slot_to_update_id = (
+        booking.slot_id
+    )  # or directly use the passed slot_id if it's guaranteed to be the AvailabilitySlot PK
 
     result_slot = await db.execute(
-        select(AvailabilitySlot).where(AvailabilitySlot.id == slot_to_update_id) # Use slot_to_update_id or the passed slot_id
+        select(AvailabilitySlot).where(
+            AvailabilitySlot.id == slot_to_update_id
+        )  # Use slot_to_update_id or the passed slot_id
     )
     slot = result_slot.scalar_one_or_none()
-    logger.info(f"Service: Found slot: {slot.id if slot else 'None'} to update (ID: {slot_to_update_id})")
+    logger.info(
+        f"Service: Found slot: {slot.id if slot else 'None'} to update (ID: {slot_to_update_id})"
+    )
 
     if not slot:
         # This case should ideally not happen if a booking existed for the slot_id,
         # but good to have a check.
-        logger.error(f"Service: Slot not found (ID: {slot_to_update_id}) for an existing booking (ID: {booking.id}). Data integrity issue?")
-        raise HTTPException(status_code=404, detail="Associated slot not found, though booking exists.")
+        logger.error(
+            f"Service: Slot not found (ID: {slot_to_update_id}) for an existing booking (ID: {booking.id}). Data integrity issue?"
+        )
+        raise HTTPException(
+            status_code=404, detail="Associated slot not found, though booking exists."
+        )
 
     slot.is_booked = False
     logger.info(f"Service: Slot {slot.id} marked as not booked.")
@@ -658,9 +676,14 @@ async def unbook_stu_slot(db: AsyncSession, slot_id: int, student_id: int):
     logger.info(f"Service: Booking {booking_id_to_delete} deleted from database.")
 
     await db.commit()
-    logger.info(f"Service: Commit successful for unbooking slot_id: {slot_id}, student_id: {student_id}")
+    logger.info(
+        f"Service: Commit successful for unbooking slot_id: {slot_id}, student_id: {student_id}"
+    )
 
-    return {"message": "Booking successfully cancelled", "slot_id": slot_id} # slot_id here is the original one passed
+    return {
+        "message": "Booking successfully cancelled",
+        "slot_id": slot_id,
+    }  # slot_id here is the original one passed
 
 
 async def get_admin_avail_slots(db: AsyncSession, admin_id: int):
@@ -924,8 +947,9 @@ async def save_course_schedule(
         if link is None:
             db.add(User_Session(user_id=user_id, session_id=sid))
 
-    # 3) persist all changes
-    await db.commit()
+    # 3) pass on db flow for the rest of the transaction
+
+    await db.flush()
 
 
 async def get_user_calendar_schedule(
@@ -960,31 +984,26 @@ async def get_user_calendar_schedule(
 
     return CourseScheduleOut(schedule)
 
+
 async def get_student_bookings(db: AsyncSession, student_id: int):
     stmt = (
         select(Booking)
         .join(Booking.slot)  # Explicitly join the slot relation
-        .options(
-            selectinload(Booking.slot)
-            .selectinload(AvailabilitySlot.admin)
-        )
+        .options(selectinload(Booking.slot).selectinload(AvailabilitySlot.admin))
         .where(Booking.student_id == student_id)
         .order_by(AvailabilitySlot.start_time.desc())
     )
     result = await db.execute(stmt)
     return result.scalars().all()
 
+
 async def get_admin_bookings(db: AsyncSession, admin_id: int):
     """Get all bookings for slots owned by a specific admin with student details"""
     stmt = (
         select(AvailabilitySlot)
-        .options(
-            selectinload(AvailabilitySlot.booking)
-            .selectinload(Booking.student)
-        )
+        .options(selectinload(AvailabilitySlot.booking).selectinload(Booking.student))
         .where(
-            AvailabilitySlot.admin_id == admin_id,
-            AvailabilitySlot.is_booked == True
+            AvailabilitySlot.admin_id == admin_id, AvailabilitySlot.is_booked == True
         )
         .order_by(AvailabilitySlot.start_time.desc())
     )

@@ -1,4 +1,5 @@
 # moodle_api/service.py
+from datetime import datetime
 import os
 import re
 import json
@@ -27,6 +28,7 @@ from user_db.services import (
     create_term,
     enroll_user_in_course,
     create_or_update_course_grade,
+    save_course_schedule,
 )
 from user_db.schemas import (
     CourseCreate,
@@ -788,7 +790,7 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
             student_info = {"Majors": [], "Minors": [], "Faculty": None}
         else:
             term_hidden_value = term_hidden_inputs.get("value")
-            term_select = "202520"  # hardcoded for now (2025/2026 semester 2)
+            term_select = "202420"  # hardcoded for now (2024/2025 semester 2)
 
             term_payload = {
                 "name_var": term_hidden_value,
@@ -1049,6 +1051,7 @@ def fetch_uwi_sas_details(credentials: SASCredentials):
             "majors": student_info["Majors"],
             "minors": student_info["Minors"],
             "faculty": student_info["Faculty"],
+            "calendar": course_schedules,
         }
 
         return {
@@ -1255,7 +1258,19 @@ async def save_initial_scraped_data(
                     logger.info(
                         f"SYNC SAVE: Updated user {user_id} with academic program information"
                     )
+
+                    # store calendar events
+
+                    if "calendar" in student_info and student_info["calendar"]:
+                        calendar_payload = student_info["calendar"]
+                        print("right before save_course_schedule, user id: ", user_id)
+                        print("right before save_course_schedule", calendar_payload)
+                        await save_course_schedule(
+                            db, user_id, calendar_payload
+                        )  # Pass session
+
                     await db.flush()  # Flush changes to database session
+
                 else:
                     logger.warning(
                         f"SYNC SAVE: User {user_id} not found for academic info update"

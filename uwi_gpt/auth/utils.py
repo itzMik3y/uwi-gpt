@@ -341,6 +341,9 @@ async def get_current_account(
         print(
             f"DEBUG: User {user.id} fetched. Terms loaded: {len(user.terms) if hasattr(user, 'terms') else 'N/A'}"
         )
+        print(
+            f"DEBUG: User {user.id} fetched. Imported sessions loaded: {len(user.imported_sessions) if hasattr(user, 'imported_sessions') else 'N/A'}"
+        )
 
         return user  # Return the user object with relationships populated
 
